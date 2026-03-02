@@ -28,6 +28,7 @@ final class GameARView: ARView {
         mesh: .generateSphere(radius: 0.12),
         materials: [SimpleMaterial(color: .red, isMetallic: false)]
     )
+    private let centerX: Float = 0
 
     // tower
     private let towerPrototype = ModelEntity(
@@ -181,6 +182,7 @@ final class GameARView: ARView {
                 // 加一點「蜘蛛人弧線」(中間高、起落貼地)
                 let arc = swingArcHeight * sin(Float.pi * eased)
                 pos.y = m.end.y + arc
+                pos.x = centerX
 
                 motion.position = pos
                 player.position = pos
