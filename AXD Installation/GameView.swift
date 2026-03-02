@@ -29,10 +29,33 @@ final class GameARView: ARView {
         materials: [SimpleMaterial(color: .red, isMetallic: false)]
     )
 
-    private let tower = ModelEntity(
+    // tower
+    private let towerPrototype = ModelEntity(
         mesh: .generateBox(size: [0.25, 1.2, 0.25]),
         materials: [SimpleMaterial(color: .white, isMetallic: false)]
     )
+
+    private enum Side { case left, right }
+
+    private var rows: [(tower: ModelEntity, z: Float, side: Side)] = []
+    private var currentRow: Int = -1
+
+    private struct AutoMove {
+        var start: SIMD3<Float>
+        var end: SIMD3<Float>
+        var elapsed: Float
+        var duration: Float
+    }
+    private var autoMove: AutoMove? = nil
+
+    // tuning knobs (你之後想改地圖密度就改這裡)
+    private let rowCount: Int = 6
+    private let rowSpacing: Float = 2.2
+    private let leftX: Float = -1.4
+    private let rightX: Float =  1.4
+    private let laneInset: Float = 0.55      // 落點離 tower 中心多近
+    private let landingZOffset: Float = 0.4  // 落點在 tower 前/後一點點
+    private let swingArcHeight: Float = 0.8  // 蜘蛛人飛行弧線高度（純視覺）
 
     private let camera = PerspectiveCamera()
     private let cameraAnchor = AnchorEntity(world: .zero)
@@ -49,8 +72,7 @@ final class GameARView: ARView {
         setupUpdateLoop()
         
         audio.start()
-        audio.setSourcePosition(tower.position(relativeTo: nil))
-        audio.setListenerPosition(player.position(relativeTo: nil))
+//        audio.setListenerPosition(player.position(relativeTo: nil))
     }
 
     @MainActor required init?(coder: NSCoder) {
@@ -67,48 +89,13 @@ final class GameARView: ARView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // Debug
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
 
-        switch c {
-        case "q": // source to LEFT
-            tower.position = [-2, tower.position.y, -2]
-            audio.setSourcePosition(tower.position(relativeTo: nil))
-            print("[audio test] source LEFT")
-            return
+        // 忽略長按造成的重複 keyDown，避免一次跳多列 :contentReference[oaicite:1]{index=1}
+        if event.isARepeat { return }
 
-        case "e": // source to RIGHT
-            tower.position = [ 2, tower.position.y, -2]
-            audio.setSourcePosition(tower.position(relativeTo: nil))
-            print("[audio test] source RIGHT")
-            return
-
-        case "1": // NEAR
-            tower.position = [tower.position.x, tower.position.y, -1]
-            audio.setSourcePosition(tower.position(relativeTo: nil))
-            print("[audio test] source NEAR")
-            return
-
-        case "2": // FAR
-            tower.position = [tower.position.x, tower.position.y, -12]
-            audio.setSourcePosition(tower.position(relativeTo: nil))
-            print("[audio test] source FAR")
-            return
-
-        default:
-            break
-        }
-        //
-        
-        if let k = mapKey(event) {
-            pressed.insert(k)
-            // 這行幫你確認「按住」時狀態確實保持
-            print("[keys] down =", pressed)
-        } else {
-            // 非 WASD 仍可印，方便 debug
-            let c = event.charactersIgnoringModifiers ?? ""
-            print("[keyDown] code=\(event.keyCode) chars=\(c)")
-        }
+        if c == "q" { sling(to: .left); return }
+        if c == "e" { sling(to: .right); return }
     }
 
     override func keyUp(with event: NSEvent) {
@@ -125,10 +112,34 @@ final class GameARView: ARView {
         scene.addAnchor(world)
 
         player.position = [0, 0.12, 0]
-        tower.position  = [0.8, 0.6, -1.6]
-
         world.addChild(player)
-        world.addChild(tower)
+        
+        // Generate rows of towers (left & right columns)
+        rows.removeAll()
+
+        for i in 0..<rowCount {
+            let z = -Float(i + 1) * rowSpacing
+
+            // 交錯：第 0 排 left、第 1 排 right、第 2 排 left…
+            // 想反過來就把 left/right 對調
+            let side: Side = (i % 2 == 0) ? .left : .right
+            let x: Float = (side == .left) ? leftX : rightX
+
+            let tower = towerPrototype.clone(recursive: true)
+            tower.position = [x, 0.6, z]
+            world.addChild(tower)
+
+            rows.append((tower: tower, z: z, side: side))
+        }
+        
+        audio.configure(loopFileName: "tower_loop_mono", fileExt: "wav")
+
+        for row in rows {
+            _ = audio.addLoopingSource(at: row.tower.position(relativeTo: nil))
+        }
+
+        audio.start()
+        audio.setListenerPosition(player.position(relativeTo: nil))
 
         // light so you can see white tower
         let light = DirectionalLight()
@@ -155,12 +166,43 @@ final class GameARView: ARView {
                 print("[tick] deltaTime =", String(format: "%.4f", event.deltaTime))
             }
             
-            motion.step(inputs: pressed, deltaTime: Float(event.deltaTime))
-            player.position = motion.position
+            let dt = Float(event.deltaTime)
 
+            // 1) Auto move (Q/E sling)
+            if var m = autoMove {
+                m.elapsed += dt
+                let t = min(m.elapsed / m.duration, 1)
+
+                // smoothstep easing: 看起來更像衝刺/擺盪
+                let eased = t * t * (3 - 2 * t)
+
+                var pos = m.start + (m.end - m.start) * eased
+
+                // 加一點「蜘蛛人弧線」(中間高、起落貼地)
+                let arc = swingArcHeight * sin(Float.pi * eased)
+                pos.y = m.end.y + arc
+
+                motion.position = pos
+                player.position = pos
+
+                if t >= 1 {
+                    // 落地：把 y 拉回地面
+                    motion.position.y = m.end.y
+                    player.position.y = m.end.y
+                    autoMove = nil
+                } else {
+                    autoMove = m
+                }
+            } else {
+                // 2) Manual move (WASD) — 你原本的邏輯照用
+                motion.step(inputs: pressed, deltaTime: dt)
+                player.position = motion.position
+            }
+
+            // 3) Listener 永遠每幀同步（你 Step 3 的核心要求）
             audio.setListenerPosition(player.position(relativeTo: nil))
 
-            // lock camera (no mouse pan)
+            // 4) Camera lock / follow
             let camOffset: SIMD3<Float> = [0, 1.2, 2.6]
             let camPos = self.player.position(relativeTo: nil) + camOffset
             self.camera.transform.translation = camPos
@@ -168,6 +210,39 @@ final class GameARView: ARView {
                              from: camPos,
                              relativeTo: nil)
         }
+    }
+    
+    private func sling(to side: Side) {
+        if autoMove != nil { return }
+
+        let next = currentRow + 1
+        guard next < rows.count else {
+            print("[sling] reached end of rows")
+            return
+        }
+
+        let row = rows[next]
+
+        // ✅ 關鍵：如果你按的是 Q(左) 但下一排塔在右，就不讓你跳（保持 q e q e 節奏）
+        guard row.side == side else {
+            print("[sling] wrong side. next row is \(row.side), you pressed \(side)")
+            return
+        }
+
+        let tower = row.tower
+
+        // 落點：在 tower 旁邊（靠近中線一點）
+        let targetX = (side == .left) ? (leftX + laneInset) : (rightX - laneInset)
+        let targetZ = row.z + landingZOffset
+        let targetY = motion.position.y
+
+        let start = motion.position
+        let end: SIMD3<Float> = [targetX, targetY, targetZ]
+
+        autoMove = AutoMove(start: start, end: end, elapsed: 0, duration: 0.35)
+        currentRow = next
+
+        print("[sling] row=\(next) side=\(side) end=\(end) tower=\(tower.position(relativeTo: nil))")
     }
     
     private func mapKey(_ event: NSEvent) -> PlayerMotion.InputKey? {
