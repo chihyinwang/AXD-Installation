@@ -37,6 +37,9 @@ final class GameARView: ARView {
     private let camera = PerspectiveCamera()
     private let cameraAnchor = AnchorEntity(world: .zero)
 
+    private var pressed: Set<PlayerMotion.InputKey> = []
+    private var motion = PlayerMotion(position: [0, 0.12, 0], speed: 2.0, fixedY: 0.12)
+    
     // MARK: init
     required init(frame frameRect: CGRect) {
         super.init(frame: frameRect)
@@ -58,8 +61,22 @@ final class GameARView: ARView {
     }
 
     override func keyDown(with event: NSEvent) {
-        let c = event.charactersIgnoringModifiers ?? ""
-        print("[keyDown] code=\(event.keyCode) chars=\(c)")
+        if let k = mapKey(event) {
+            pressed.insert(k)
+            // 這行幫你確認「按住」時狀態確實保持
+            print("[keys] down =", pressed)
+        } else {
+            // 非 WASD 仍可印，方便 debug
+            let c = event.charactersIgnoringModifiers ?? ""
+            print("[keyDown] code=\(event.keyCode) chars=\(c)")
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if let k = mapKey(event) {
+            pressed.remove(k)
+            print("[keys] up   =", pressed)
+        }
     }
 
     // MARK: Scene setup
@@ -98,13 +115,40 @@ final class GameARView: ARView {
                 self.seconds = 0
                 print("[tick] deltaTime =", String(format: "%.4f", event.deltaTime))
             }
+            
+            let dt = Float(event.deltaTime)
+            motion.step(inputs: pressed, deltaTime: dt)
+            player.position = motion.position
 
             // lock camera (no mouse pan)
-            let camPos: SIMD3<Float> = [0, 1.2, 2.6]
+            let camOffset: SIMD3<Float> = [0, 1.2, 2.6]
+            let camPos = self.player.position(relativeTo: nil) + camOffset
             self.camera.transform.translation = camPos
             self.camera.look(at: self.player.position(relativeTo: nil),
                              from: camPos,
                              relativeTo: nil)
+        }
+    }
+    
+    private func mapKey(_ event: NSEvent) -> PlayerMotion.InputKey? {
+        // 優先用字元（適配不同鍵盤佈局），再用 keyCode 當備援
+        if let c = event.charactersIgnoringModifiers?.lowercased() {
+            switch c {
+            case "w": return .w
+            case "a": return .a
+            case "s": return .s
+            case "d": return .d
+            default: break
+            }
+        }
+
+        // keyCode 備援（常見 US 鍵盤：W=13 A=0 S=1 D=2）
+        switch event.keyCode {
+        case 13: return .w
+        case 0:  return .a
+        case 1:  return .s
+        case 2:  return .d
+        default: return nil
         }
     }
 }
