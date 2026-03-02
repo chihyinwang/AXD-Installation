@@ -40,11 +40,17 @@ final class GameARView: ARView {
     private var pressed: Set<PlayerMotion.InputKey> = []
     private var motion = PlayerMotion(position: [0, 0.12, 0], speed: 2.0, fixedY: 0.12)
     
+    private let audio = SpatialAudioRig()
+    
     // MARK: init
     required init(frame frameRect: CGRect) {
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
+        
+        audio.start()
+        audio.setSourcePosition(tower.position(relativeTo: nil))
+        audio.setListenerPosition(player.position(relativeTo: nil))
     }
 
     @MainActor required init?(coder: NSCoder) {
@@ -61,6 +67,39 @@ final class GameARView: ARView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Debug
+        let c = (event.charactersIgnoringModifiers ?? "").lowercased()
+
+        switch c {
+        case "q": // source to LEFT
+            tower.position = [-2, tower.position.y, -2]
+            audio.setSourcePosition(tower.position(relativeTo: nil))
+            print("[audio test] source LEFT")
+            return
+
+        case "e": // source to RIGHT
+            tower.position = [ 2, tower.position.y, -2]
+            audio.setSourcePosition(tower.position(relativeTo: nil))
+            print("[audio test] source RIGHT")
+            return
+
+        case "1": // NEAR
+            tower.position = [tower.position.x, tower.position.y, -1]
+            audio.setSourcePosition(tower.position(relativeTo: nil))
+            print("[audio test] source NEAR")
+            return
+
+        case "2": // FAR
+            tower.position = [tower.position.x, tower.position.y, -12]
+            audio.setSourcePosition(tower.position(relativeTo: nil))
+            print("[audio test] source FAR")
+            return
+
+        default:
+            break
+        }
+        //
+        
         if let k = mapKey(event) {
             pressed.insert(k)
             // 這行幫你確認「按住」時狀態確實保持
@@ -116,9 +155,10 @@ final class GameARView: ARView {
                 print("[tick] deltaTime =", String(format: "%.4f", event.deltaTime))
             }
             
-            let dt = Float(event.deltaTime)
-            motion.step(inputs: pressed, deltaTime: dt)
+            motion.step(inputs: pressed, deltaTime: Float(event.deltaTime))
             player.position = motion.position
+
+            audio.setListenerPosition(player.position(relativeTo: nil))
 
             // lock camera (no mouse pan)
             let camOffset: SIMD3<Float> = [0, 1.2, 2.6]
