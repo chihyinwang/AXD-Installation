@@ -10,14 +10,83 @@ import RealityKit
 import Combine
 import AppKit
 
-// SwiftUI -> AppKit bridge
+// MARK: - SwiftUI Bridge (SwiftUI -> AppKit -> RealityKit)
+
 struct GameView: NSViewRepresentable {
     func makeNSView(context: Context) -> GameARView { GameARView(frame: .zero) }
     func updateNSView(_ nsView: GameARView, context: Context) {}
 }
 
-// RealityKit view in non-AR mode (macOS desktop)
+// MARK: - RealityKit View (macOS desktop, non-AR)
+
 final class GameARView: ARView {
+
+    // MARK: Types
+
+    private enum PlayerMode { case rooftop, swinging, falling, grounded }
+    private enum Side { case left, right }
+
+    private struct SwingState {
+        let anchor: SIMD3<Float>
+        var ropeLengthYZ: Float       // Current rope length in the YZ plane (changes per frame via reel-in)
+        let ropeTargetYZ: Float       // Target rope length in the YZ plane (computed once on attach)
+        let towerZ: Float
+        let rowIndex: Int
+    }
+
+    private struct AutoMove {
+        var start: SIMD3<Float>
+        var end: SIMD3<Float>
+        var elapsed: Float
+        var duration: Float
+    }
+
+    // MARK: Configuration (tuning knobs)
+
+    // Core world / physics
+    private let centerX: Float = 0
+    private let groundY: Float = 0.12
+    private let rooftopY: Float = 7.0
+    private let gravity: Float = 9.8
+
+    // Swing behavior
+    private let detachAfterPassing: Float = 3.0
+    private let initialSwingSpeed: Float = 7.0
+
+    // Focus ("五感世界") timing
+    private let focusDuration: Float = 1.0      // Total focus duration (real time)
+    private let focusTimeScale: Float = 0.25    // Simulation slow-mo scale while focus is active
+    private let focusDelay: Float = 0.75        // Delay after passing the tower before focus starts
+
+    // Web attach & rope constraints
+    private let webAttachExtraHeight: Float = 1.8
+
+    private let ropeScale: Float = 0.55         // < 1 shortens the measured rope length
+    private let ropeMinYZ: Float = 3.5          // Minimum rope length (YZ plane)
+    private let ropeMaxHard: Float = 8.0        // Hard upper bound
+    private let minClearanceY: Float = 1.8      // Keep lowest swing point above ground by this margin
+
+    // Tower layout
+    private let towerHeight: Float = 5.0
+
+    private let rowCount: Int = 12
+    private let rowSpacing: Float = 20
+
+    private let leftX: Float = -1.4
+    private let rightX: Float =  1.4
+
+    // Currently unused layout knobs (kept intentionally for future tuning/visual polish)
+    private let laneInset: Float = 0.55
+    private let landingZOffset: Float = 0.4
+    private let swingArcHeight: Float = 0.8
+
+    // Ground mesh
+    private let groundThickness: Float = 0.05
+
+    // Legacy/unused (kept to avoid altering any behavior/structure)
+    private let playerCenterX: Float = 0
+
+    // MARK: Scene entities (RealityKit graph)
 
     private var updateSub: Cancellable?
     private var seconds: Double = 0
@@ -28,75 +97,78 @@ final class GameARView: ARView {
         mesh: .generateSphere(radius: 0.12),
         materials: [SimpleMaterial(color: .red, isMetallic: false)]
     )
-    private let centerX: Float = 0
-
-    // tower
-    private let towerPrototype = ModelEntity(
-        mesh: .generateBox(size: [0.25, 1.2, 0.25]),
-        materials: [SimpleMaterial(color: .white, isMetallic: false)]
-    )
-
-    private enum Side { case left, right }
-
-    private var rows: [(tower: ModelEntity, z: Float, side: Side)] = []
-    private var currentRow: Int = -1
-
-    private struct AutoMove {
-        var start: SIMD3<Float>
-        var end: SIMD3<Float>
-        var elapsed: Float
-        var duration: Float
-    }
-    private var autoMove: AutoMove? = nil
-
-    // tuning knobs (你之後想改地圖密度就改這裡)
-    private let rowCount: Int = 6
-    private let rowSpacing: Float = 2.2
-    private let leftX: Float = -1.4
-    private let rightX: Float =  1.4
-    private let laneInset: Float = 0.55      // 落點離 tower 中心多近
-    private let landingZOffset: Float = 0.4  // 落點在 tower 前/後一點點
-    private let swingArcHeight: Float = 0.8  // 蜘蛛人飛行弧線高度（純視覺）
 
     private let camera = PerspectiveCamera()
     private let cameraAnchor = AnchorEntity(world: .zero)
 
+    private lazy var towerPrototype: ModelEntity = {
+        let m = ModelEntity(
+            mesh: .generateBox(size: [0.25, towerHeight, 0.25]),
+            materials: [SimpleMaterial(color: .white, isMetallic: false)]
+        )
+        return m
+    }()
+
+    private var webEntity: ModelEntity? = nil
+
+    private let audio = SpatialAudioRig()
+
+    // MARK: Runtime state
+
+    private var mode: PlayerMode = .rooftop
+
+    private var playerPos: SIMD3<Float> = [0, 4.0, 0]
+    private var playerVel: SIMD3<Float> = .zero
+
+    private var swing: SwingState? = nil
+
+    private var focusRemaining: Float = 0
+    private var focusDelayRemaining: Float = 0
+    private var focusActive: Bool { focusRemaining > 0 }
+
+    // Optional: record which side the next tower is on (useful for debugging / player feedback)
+    private var expectedNextSide: Side? = nil
+
+    private var rows: [(tower: ModelEntity, z: Float, side: Side)] = []
+    private var currentRow: Int = -1
+
+    private var autoMove: AutoMove? = nil
+
+    // WASD scaffolding (currently only keyUp removes keys; keyDown is dedicated to Q/E)
     private var pressed: Set<PlayerMotion.InputKey> = []
     private var motion = PlayerMotion(position: [0, 0.12, 0], speed: 2.0, fixedY: 0.12)
-    
-    private let audio = SpatialAudioRig()
-    
-    // MARK: init
+
+    // MARK: Init
+
     required init(frame frameRect: CGRect) {
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
-        
+
         audio.start()
-//        audio.setListenerPosition(player.position(relativeTo: nil))
+        // audio.setListenerPosition(player.position(relativeTo: nil))
     }
 
     @MainActor required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: Keyboard focus
-    override var acceptsFirstResponder: Bool { true } // allow key events :contentReference[oaicite:4]{index=4}
+    // MARK: Keyboard focus & events
+
+    override var acceptsFirstResponder: Bool { true } // Needed to receive key events
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self) // try to grab focus :contentReference[oaicite:5]{index=5}
+        window?.makeFirstResponder(self) // Attempt to grab keyboard focus
         print("[focus] firstResponder =", String(describing: window?.firstResponder))
     }
 
     override func keyDown(with event: NSEvent) {
-        let c = (event.charactersIgnoringModifiers ?? "").lowercased()
-
-        // 忽略長按造成的重複 keyDown，避免一次跳多列 :contentReference[oaicite:1]{index=1}
         if event.isARepeat { return }
 
-        if c == "q" { sling(to: .left); return }
-        if c == "e" { sling(to: .right); return }
+        let c = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if c == "q" { attemptShoot(.left); return }
+        if c == "e" { attemptShoot(.right); return }
     }
 
     override func keyUp(with event: NSEvent) {
@@ -107,32 +179,39 @@ final class GameARView: ARView {
     }
 
     // MARK: Scene setup
+
     private func setupScene() {
         environment.background = .color(.black)
-
         scene.addAnchor(world)
 
-        player.position = [0, 0.12, 0]
+        let ground = makeGroundEntity()
+        world.addChild(ground)
+
+        // Player starts on the rooftop
+        playerPos = [centerX, rooftopY, 0]
+        player.position = playerPos
+        playerVel = .zero
+        mode = .rooftop
         world.addChild(player)
-        
-        // Generate rows of towers (left & right columns)
+
+        // Generate rows of towers (alternating left/right)
         rows.removeAll()
 
         for i in 0..<rowCount {
             let z = -Float(i + 1) * rowSpacing
 
-            // 交錯：第 0 排 left、第 1 排 right、第 2 排 left…
-            // 想反過來就把 left/right 對調
+            // Alternate: row 0 left, row 1 right, row 2 left, ...
             let side: Side = (i % 2 == 0) ? .left : .right
             let x: Float = (side == .left) ? leftX : rightX
 
             let tower = towerPrototype.clone(recursive: true)
-            tower.position = [x, 0.6, z]
+            tower.position = [x, towerHeight * 0.5, z]
             world.addChild(tower)
 
             rows.append((tower: tower, z: z, side: side))
         }
-        
+
+        // Spatial audio: one looping source per tower, listener follows player
         audio.configure(loopFileName: "tower_loop_mono", fileExt: "wav")
 
         for row in rows {
@@ -142,113 +221,355 @@ final class GameARView: ARView {
         audio.start()
         audio.setListenerPosition(player.position(relativeTo: nil))
 
-        // light so you can see white tower
+        // Light so towers are visible
         let light = DirectionalLight()
         light.light.intensity = 2000
         light.look(at: .zero, from: [1, 2, 2], relativeTo: nil)
         world.addChild(light)
 
-        // fixed third-person-ish camera
+        // Camera setup
         camera.camera.fieldOfViewInDegrees = 60
+        camera.position = .zero
+
         cameraAnchor.addChild(camera)
         scene.addAnchor(cameraAnchor)
     }
 
     // MARK: Update loop (per frame)
+
     private func setupUpdateLoop() {
-        // SceneEvents.Update fires every frame :contentReference[oaicite:7]{index=7}
+        // SceneEvents.Update fires every frame
         updateSub = scene.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             guard let self else { return }
 
-            // heartbeat: print once per second
-            self.seconds += event.deltaTime
-            if self.seconds >= 1.0 {
-                self.seconds = 0
-                print("[tick] deltaTime =", String(format: "%.4f", event.deltaTime))
-            }
-            
-            let dt = Float(event.deltaTime)
+            let realDt = Float(event.deltaTime)
 
-            // 1) Auto move (Q/E sling)
-            if var m = autoMove {
-                m.elapsed += dt
-                let t = min(m.elapsed / m.duration, 1)
-
-                // smoothstep easing: 看起來更像衝刺/擺盪
-                let eased = t * t * (3 - 2 * t)
-
-                var pos = m.start + (m.end - m.start) * eased
-
-                // 加一點「蜘蛛人弧線」(中間高、起落貼地)
-                let arc = swingArcHeight * sin(Float.pi * eased)
-                pos.y = m.end.y + arc
-                pos.x = centerX
-
-                motion.position = pos
-                player.position = pos
-
-                if t >= 1 {
-                    // 落地：把 y 拉回地面
-                    motion.position.y = m.end.y
-                    player.position.y = m.end.y
-                    autoMove = nil
-                } else {
-                    autoMove = m
+            // 1) Focus delay countdown (uses real time)
+            if focusDelayRemaining > 0 {
+                focusDelayRemaining -= realDt
+                if focusDelayRemaining <= 0 {
+                    focusDelayRemaining = 0
+                    focusRemaining = focusDuration
+                    print("[focus] start (delayed)")
                 }
-            } else {
-                // 2) Manual move (WASD) — 你原本的邏輯照用
-                motion.step(inputs: pressed, deltaTime: dt)
-                player.position = motion.position
             }
 
-            // 3) Listener 永遠每幀同步（你 Step 3 的核心要求）
-            audio.setListenerPosition(player.position(relativeTo: nil))
+            // 2) Focus countdown (uses real time)
+            if focusRemaining > 0 {
+                focusRemaining -= realDt
+                if focusRemaining <= 0 {
+                    focusRemaining = 0
+                    expectedNextSide = nil
+                    print("[focus] end")
+                }
+            }
 
-            // 4) Camera lock / follow
-            let camOffset: SIMD3<Float> = [0, 1.2, 2.6]
-            let camPos = self.player.position(relativeTo: nil) + camOffset
-            self.camera.transform.translation = camPos
-            self.camera.look(at: self.player.position(relativeTo: nil),
-                             from: camPos,
-                             relativeTo: nil)
+            // 3) Simulation dt: slowed only while focus is active
+            let dt = realDt * ((focusRemaining > 0) ? focusTimeScale : 1.0)
+
+            // --- Movement state machine ---
+            switch mode {
+            case .rooftop:
+                // Standing still until the first Q/E attaches a web
+                playerPos = [centerX, rooftopY, 0]
+                playerVel = .zero
+
+            case .swinging:
+                guard var s = swing else { mode = .falling; break }
+
+                // 0) Reel-in: move ropeLengthYZ toward ropeTargetYZ gradually (prevents teleport)
+                let reelSpeed: Float = 6.0
+                let diff = s.ropeTargetYZ - s.ropeLengthYZ
+                let reelStep = max(min(diff, reelSpeed * dt), -reelSpeed * dt)
+                s.ropeLengthYZ += reelStep
+
+                // 1) Integrate motion in the YZ plane
+                var p2 = SIMD2<Float>(playerPos.y - s.anchor.y, playerPos.z - s.anchor.z)
+                var v2 = SIMD2<Float>(playerVel.y, playerVel.z)
+
+                // Gravity affects Y (p2.x)
+                v2.x += -gravity * dt
+                p2 += v2 * dt
+
+                // 2) Constraint: project position onto the circle (radius = ropeLengthYZ)
+                let r = max(simd_length(p2), 0.001)
+                p2 *= (s.ropeLengthYZ / r)
+
+                // 3) Remove radial velocity (keep tangential component)
+                let radial = p2 / s.ropeLengthYZ
+                let vRad = simd_dot(v2, radial)
+                v2 -= vRad * radial
+
+                // Small damping (optional)
+                v2 *= 0.999
+
+                // 4) Write back to 3D (X locked to center line)
+                playerPos.x = centerX
+                playerPos.y = s.anchor.y + p2.x
+                playerPos.z = s.anchor.z + p2.y
+                playerVel.y = v2.x
+                playerVel.z = v2.y
+
+                // 5) Update web every frame (sticks to player + anchor)
+                updateWeb(from: playerPos, to: s.anchor)
+
+                // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
+                let farEnough = playerPos.z < s.towerZ - detachAfterPassing
+                let rising = playerVel.y > 0.4
+                let highEnough = playerPos.y > (groundY + minClearanceY + 0.6)
+
+                if farEnough && rising && highEnough {
+                    let passedRow = s.rowIndex
+                    print(String(format: "[web] detach y=%.2f z=%.2f vy=%.2f vz=%.2f",
+                                 playerPos.y, playerPos.z, playerVel.y, playerVel.z))
+
+                    swing = nil
+                    hideWeb()
+                    mode = .falling
+
+                    // Schedule focus to start after a short delay
+                    focusDelayRemaining = focusDelay
+                    focusRemaining = 0
+
+                    let nextIndex = passedRow + 1
+                    if nextIndex < rows.count {
+                        expectedNextSide = rows[nextIndex].side
+                        print("[focus] will start after delay. next side should be \(expectedNextSide!)")
+                    } else {
+                        expectedNextSide = nil
+                        print("[focus] will start after delay (no next tower)")
+                    }
+                    break
+                }
+
+                // Persist updated rope length
+                swing = s
+
+            case .falling:
+                // Free fall until hitting the ground
+                playerVel.y += -gravity * dt
+                playerPos += playerVel * dt
+                playerPos.x = centerX
+
+                if playerPos.y <= groundY {
+                    playerPos.y = groundY
+                    playerVel = .zero
+                    mode = .grounded
+                }
+
+            case .grounded:
+                // Grounded state (no movement yet)
+                playerPos.x = centerX
+                playerPos.y = groundY
+            }
+
+            // Apply transform to the entity
+            player.position = playerPos
+            updateCameraFollow()
+
+            // Listener always follows the player
+            audio.setListenerPosition(playerPos)
         }
     }
-    
-    private func sling(to side: Side) {
-        if autoMove != nil { return }
 
-        let next = currentRow + 1
-        guard next < rows.count else {
-            print("[sling] reached end of rows")
+    // MARK: Input gating (Q/E -> attemptShoot -> shootWeb)
+
+    private func attemptShoot(_ side: Side) {
+        // 1) Block shooting while grounded (prevents underground swinging)
+        if mode == .grounded {
+            print("[shoot] blocked (grounded/dead)")
             return
         }
 
-        let row = rows[next]
+        // 2) First shot is allowed from rooftop
+        if mode == .rooftop {
+            shootWeb(to: side)
+            return
+        }
 
-        // ✅ 關鍵：如果你按的是 Q(左) 但下一排塔在右，就不讓你跳（保持 q e q e 節奏）
+        // 3) After the first tower: only allow shooting during focus
+        guard focusActive else {
+            print("[shoot] blocked (not in focus)")
+            return
+        }
+
+        // Optional: enforce the expected alternating side rhythm
+        if let expected = expectedNextSide, expected != side {
+            print("[shoot] wrong side. expected \(expected), got \(side)")
+            return
+        }
+
+        // Consume focus immediately on a successful shot (return to normal time)
+        shootWeb(to: side)
+        focusRemaining = 0
+        expectedNextSide = nil
+        print("[focus] consumed by shot")
+    }
+
+    private func shootWeb(to side: Side) {
+        // Target the next row
+        let nextIndex: Int
+        if let s = swing {
+            nextIndex = s.rowIndex + 1
+        } else {
+            nextIndex = currentRow + 1
+        }
+
+        guard nextIndex >= 0 && nextIndex < rows.count else {
+            print("[web] no next tower")
+            return
+        }
+
+        let row = rows[nextIndex]
         guard row.side == side else {
-            print("[sling] wrong side. next row is \(row.side), you pressed \(side)")
+            print("[web] wrong side. next is \(row.side), you pressed \(side)")
             return
         }
 
         let tower = row.tower
+        let towerPos = tower.position(relativeTo: nil)
 
-        // 落點：在 tower 旁邊（靠近中線一點）
-        let targetX = (side == .left) ? (leftX + laneInset) : (rightX - laneInset)
-        let targetZ = row.z + landingZOffset
-        let targetY = motion.position.y
+        // Anchor = top of tower + extra height (to increase swing angle)
+        let towerTopY = towerPos.y + towerHeight * 0.5
+        let anchor = SIMD3<Float>(towerPos.x, towerTopY + webAttachExtraHeight, towerPos.z)
 
-        let start = motion.position
-        let end: SIMD3<Float> = [targetX, targetY, targetZ]
+        let dx = centerX - anchor.x
+        let dy = playerPos.y - anchor.y
+        let dz = playerPos.z - anchor.z
+        let L2 = dx*dx + dy*dy + dz*dz
+        let yz2 = max(L2 - dx*dx, 0.01)
+        let measuredYZ = sqrt(yz2)
 
-        autoMove = AutoMove(start: start, end: end, elapsed: 0, duration: 0.35)
-        currentRow = next
+        // Keep lowest point above ground: lowest approx = anchor.y - ropeYZ
+        let maxByClearance = max(anchor.y - (groundY + minClearanceY), ropeMinYZ)
+        let ropeMax = min(ropeMaxHard, maxByClearance)
 
-        print("[sling] row=\(next) side=\(side) end=\(end) tower=\(tower.position(relativeTo: nil))")
+        // Target rope length (scaled + clamped)
+        let ropeTargetYZ = min(max(measuredYZ * ropeScale, ropeMinYZ), ropeMax)
+
+        // Current rope length starts at measuredYZ (keeps current position -> no teleport)
+        let ropeCurrentYZ = measuredYZ
+
+        swing = SwingState(anchor: anchor,
+                           ropeLengthYZ: ropeCurrentYZ,
+                           ropeTargetYZ: ropeTargetYZ,
+                           towerZ: towerPos.z,
+                           rowIndex: nextIndex)
+
+        print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
+                     measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
+        currentRow = nextIndex
+        mode = .swinging
+
+        // Add initial tangential velocity in the YZ plane to ensure forward swing
+        // radial = (dy, dz), tangent = (-dz, dy) normalized
+        let radial = SIMD2<Float>(dy, dz)
+        let rLen = max(simd_length(radial), 0.001)
+        let rN = radial / rLen
+        let tangent = SIMD2<Float>(-rN.y, rN.x)
+
+        playerVel.y += tangent.x * initialSwingSpeed
+        playerVel.z += tangent.y * initialSwingSpeed
+
+        print("[web] attach row=\(nextIndex) side=\(side) anchor=\(anchor)")
     }
-    
+
+    // MARK: Web rendering (entity creation/update/removal)
+
+    private func showWeb(from start: SIMD3<Float>, to end: SIMD3<Float>) {
+        // One-shot creation (kept for reference; current gameplay uses updateWeb each frame)
+        webEntity?.removeFromParent()
+        webEntity = nil
+
+        let dir = end - start
+        let length = simd_length(dir)
+        guard length > 0.001 else { return }
+
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.01)
+        let mat  = SimpleMaterial(color: .white, isMetallic: false)
+        let web  = ModelEntity(mesh: mesh, materials: [mat])
+
+        // Cylinder height is along local Y; scale Y to match length
+        web.scale = [1, length, 1]
+
+        // Place at midpoint
+        let mid = (start + end) * 0.5
+        web.position = mid
+
+        // Rotate local (0,1,0) to match direction
+        let n = dir / length
+        web.orientation = simd_quatf(from: [0, 1, 0], to: n)
+
+        world.addChild(web)
+        webEntity = web
+    }
+
+    private func ensureWebEntity() -> ModelEntity {
+        if let w = webEntity { return w }
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.01)
+        let mat  = SimpleMaterial(color: .white, isMetallic: false)
+        let w = ModelEntity(mesh: mesh, materials: [mat])
+        world.addChild(w)
+        webEntity = w
+        return w
+    }
+
+    private func updateWeb(from start: SIMD3<Float>, to end: SIMD3<Float>) {
+        let dir = end - start
+        let length = simd_length(dir)
+        if length < 0.001 { return }
+
+        let w = ensureWebEntity()
+
+        // Place at midpoint
+        w.position = (start + end) * 0.5
+
+        // Rotate cylinder local Y axis to direction
+        let n = dir / length
+        w.orientation = simd_quatf(from: [0, 1, 0], to: n)
+
+        // Scale height to length
+        w.scale = [1, length, 1]
+    }
+
+    private func hideWeb() {
+        webEntity?.removeFromParent()
+        webEntity = nil
+    }
+
+    // MARK: Camera
+
+    private func updateCameraFollow() {
+        // Offset behind & above player (forward is -Z, so "behind" is +Z)
+        let offset: SIMD3<Float> = [0, 1.6, 3.2]
+
+        let target = playerPos
+        let camPos = target + offset
+
+        cameraAnchor.position = camPos
+        cameraAnchor.look(at: target, from: camPos, relativeTo: nil)
+    }
+
+    // MARK: Ground
+
+    private func makeGroundEntity() -> ModelEntity {
+        // Ground size: wide enough for lanes; deep enough to cover the farthest tower row
+        let width: Float = max(10, abs(leftX) + abs(rightX) + 6)
+        let depth: Float = Float(rowCount + 3) * rowSpacing + 8
+
+        let mesh = MeshResource.generateBox(size: [width, groundThickness, depth])
+        let mat = SimpleMaterial(color: .gray, isMetallic: false)
+        let ground = ModelEntity(mesh: mesh, materials: [mat])
+
+        // Place so the top surface is at y=0, extending from z=0 forward into negative Z
+        ground.position = [0, -groundThickness * 0.5, -depth * 0.5]
+        return ground
+    }
+
+    // MARK: Helpers
+
     private func mapKey(_ event: NSEvent) -> PlayerMotion.InputKey? {
-        // 優先用字元（適配不同鍵盤佈局），再用 keyCode 當備援
+        // Prefer characters (keyboard-layout friendly), fall back to keyCode
         if let c = event.charactersIgnoringModifiers?.lowercased() {
             switch c {
             case "w": return .w
@@ -259,7 +580,7 @@ final class GameARView: ARView {
             }
         }
 
-        // keyCode 備援（常見 US 鍵盤：W=13 A=0 S=1 D=2）
+        // Common US keyboard keyCodes: W=13 A=0 S=1 D=2
         switch event.keyCode {
         case 13: return .w
         case 0:  return .a
