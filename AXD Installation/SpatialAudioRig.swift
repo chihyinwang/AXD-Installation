@@ -16,9 +16,27 @@ final class SpatialAudioRig {
     private var loopBuffer: AVAudioPCMBuffer?
     private var sources: [UUID: AVAudioPlayerNode] = [:]
     private var started = false
+    private var defaultSourceVolume: Float = 0.25
+
+    private struct AttenuationProfile {
+        let referenceDistance: Float
+        let maximumDistance: Float
+        let rolloffFactor: Float
+    }
+
+    private let normalAttenuation = AttenuationProfile(
+        referenceDistance: 0.5,
+        maximumDistance: 30,
+        rolloffFactor: 3.0
+    )
+    private let focusAttenuation = AttenuationProfile(
+        referenceDistance: 2.5,
+        maximumDistance: 80,
+        rolloffFactor: 0.8
+    )
 
     // 1) 先建好音訊圖（graph）：environment -> mainMixer
-    func configure(loopFileName: String = "tower_loop_mono", fileExt: String = "wav") {
+    func configure(loopFileName: String = "tower_loop_mono1", fileExt: String = "wav") {
         guard !started else { return }
 
         engine.attach(environment)
@@ -30,9 +48,7 @@ final class SpatialAudioRig {
         // 環境：HRTF + 距離衰減參數（你已經驗證有效）
         environment.renderingAlgorithm = .HRTF
         environment.distanceAttenuationParameters.distanceAttenuationModel = .inverse
-        environment.distanceAttenuationParameters.referenceDistance = 0.5
-        environment.distanceAttenuationParameters.maximumDistance = 30
-        environment.distanceAttenuationParameters.rolloffFactor = 3.0
+        applyAttenuation(normalAttenuation)
         // distanceAttenuationParameters / model 是掛在 environment 上
         // :contentReference[oaicite:0]{index=0}
 
@@ -58,6 +74,7 @@ final class SpatialAudioRig {
         node.sourceMode = .spatializeIfMono
         node.reverbBlend = 0.0
         node.volume = volume
+        defaultSourceVolume = volume
 
         node.position = AVAudio3DPoint(x: position.x, y: position.y, z: position.z)
 
@@ -104,6 +121,24 @@ final class SpatialAudioRig {
     // （可選）如果你未來 tower 會動，可用 id 更新 position
     func setSourcePosition(id: UUID, _ p: SIMD3<Float>) {
         sources[id]?.position = AVAudio3DPoint(x: p.x, y: p.y, z: p.z)
+    }
+
+    func setNormalMix(defaultVolume: Float? = nil) {
+        if let defaultVolume {
+            self.defaultSourceVolume = defaultVolume
+        }
+
+        for (_, node) in sources {
+            node.volume = self.defaultSourceVolume
+        }
+        applyAttenuation(normalAttenuation)
+    }
+
+    func setFocusMix(focusSourceID: UUID, focusSourceVolume: Float = 0.5, otherSourcesVolume: Float = 0.0) {
+        for (id, node) in sources {
+            node.volume = (id == focusSourceID) ? focusSourceVolume : otherSourcesVolume
+        }
+        applyAttenuation(focusAttenuation)
     }
 
     // MARK: - Loading & downmix (避免 channel mismatch)
@@ -157,5 +192,11 @@ final class SpatialAudioRig {
         } catch {
             fatalError("Failed reading audio: \(error)")
         }
+    }
+
+    private func applyAttenuation(_ profile: AttenuationProfile) {
+        environment.distanceAttenuationParameters.referenceDistance = profile.referenceDistance
+        environment.distanceAttenuationParameters.maximumDistance = profile.maximumDistance
+        environment.distanceAttenuationParameters.rolloffFactor = profile.rolloffFactor
     }
 }
