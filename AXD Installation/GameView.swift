@@ -13,7 +13,11 @@ import AppKit
 // MARK: - SwiftUI Bridge (SwiftUI -> AppKit -> RealityKit)
 
 struct GameView: NSViewRepresentable {
-    func makeNSView(context: Context) -> GameARView { GameARView(frame: .zero) }
+    var focusTiming: FocusTimingConfig = .default
+
+    func makeNSView(context: Context) -> GameARView {
+        GameARView(frame: .zero, focusTiming: focusTiming)
+    }
     func updateNSView(_ nsView: GameARView, context: Context) {}
 }
 
@@ -55,9 +59,7 @@ final class GameARView: ARView {
     private let initialSwingSpeed: Float = 7.0
 
     // Focus ("五感世界") timing
-    private let focusDuration: Float = 1.8      // Total focus duration (real time)
-    private let focusTimeScale: Float = 0.25    // Simulation slow-mo scale while focus is active
-    private let focusDelay: Float = 0.55        // Delay after passing the tower before focus starts
+    private let focusTiming: FocusTimingConfig
 
     // Web attach & rope constraints
     private let webAttachExtraHeight: Float = 1.8
@@ -112,8 +114,8 @@ final class GameARView: ARView {
 
     private var webEntity: ModelEntity? = nil
 
-    private let audio = SpatialAudioRig()
-    private var towerAudioIDs: [UUID] = []
+    private let audio: SpatialAudioRig
+    private let audioMixController: TowerAudioMixController
 
     // MARK: Runtime state
 
@@ -127,8 +129,6 @@ final class GameARView: ARView {
     private var focusRemaining: Float = 0
     private var focusDelayRemaining: Float = 0
     private var focusActive: Bool { focusRemaining > 0 }
-    private var focusAudioTargetRowIndex: Int? = nil
-    private var isFocusMixApplied: Bool = false
 
     // Optional: record which side the next tower is on (useful for debugging / player feedback)
     private var expectedNextSide: Side? = nil
@@ -144,13 +144,26 @@ final class GameARView: ARView {
 
     // MARK: Init
 
-    required init(frame frameRect: CGRect) {
+    init(frame frameRect: CGRect, focusTiming: FocusTimingConfig = .default) {
+        self.focusTiming = focusTiming
+        self.audio = SpatialAudioRig()
+        self.audioMixController = TowerAudioMixController(audio: audio)
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
 
         audio.start()
-        // audio.setListenerPosition(player.position(relativeTo: nil))
+    }
+
+    @MainActor required init(frame frameRect: CGRect) {
+        self.focusTiming = .default
+        self.audio = SpatialAudioRig()
+        self.audioMixController = TowerAudioMixController(audio: audio)
+        super.init(frame: frameRect)
+        setupScene()
+        setupUpdateLoop()
+
+        audio.start()
     }
 
     @MainActor required init?(coder: NSCoder) {
@@ -220,11 +233,11 @@ final class GameARView: ARView {
 
         for row in rows {
             let sourceID = audio.addLoopingSource(at: row.tower.position(relativeTo: nil))
-            towerAudioIDs.append(sourceID)
+            audioMixController.registerTowerSource(sourceID)
         }
 
         audio.start()
-        audio.setNormalMix(defaultVolume: 0.25)
+        audioMixController.resetToNormalMix()
         audio.setListenerPosition(player.position(relativeTo: nil))
 
         // Light so towers are visible
@@ -255,7 +268,7 @@ final class GameARView: ARView {
                 focusDelayRemaining -= realDt
                 if focusDelayRemaining <= 0 {
                     focusDelayRemaining = 0
-                    focusRemaining = focusDuration
+                    focusRemaining = focusTiming.duration
                     print("[focus] start (delayed)")
                 }
             }
@@ -266,13 +279,13 @@ final class GameARView: ARView {
                 if focusRemaining <= 0 {
                     focusRemaining = 0
                     expectedNextSide = nil
-                    focusAudioTargetRowIndex = nil
+                    audioMixController.clearFocusTarget()
                     print("[focus] end")
                 }
             }
 
             // 3) Simulation dt: slowed only while focus is active
-            let dt = realDt * ((focusRemaining > 0) ? focusTimeScale : 1.0)
+            let dt = realDt * ((focusRemaining > 0) ? focusTiming.timeScale : 1.0)
 
             // --- Movement state machine ---
             switch mode {
@@ -335,17 +348,17 @@ final class GameARView: ARView {
                     mode = .falling
 
                     // Schedule focus to start after a short delay
-                    focusDelayRemaining = focusDelay
+                    focusDelayRemaining = focusTiming.delay
                     focusRemaining = 0
 
                     let nextIndex = passedRow + 1
                     if nextIndex < rows.count {
                         expectedNextSide = rows[nextIndex].side
-                        focusAudioTargetRowIndex = nextIndex
+                        audioMixController.setFocusTargetRowIndex(nextIndex)
                         print("[focus] will start after delay. next side should be \(expectedNextSide!)")
                     } else {
                         expectedNextSide = nil
-                        focusAudioTargetRowIndex = nil
+                        audioMixController.clearFocusTarget()
                         print("[focus] will start after delay (no next tower)")
                     }
                     break
@@ -378,7 +391,7 @@ final class GameARView: ARView {
 
             // Listener always follows the player
             audio.setListenerPosition(playerPos)
-            updateAudioMixForCurrentState()
+            audioMixController.updateMix(isFocusActive: focusActive)
         }
     }
 
@@ -413,28 +426,8 @@ final class GameARView: ARView {
         shootWeb(to: side)
         focusRemaining = 0
         expectedNextSide = nil
-        focusAudioTargetRowIndex = nil
+        audioMixController.clearFocusTarget()
         print("[focus] consumed by shot")
-    }
-
-    private func updateAudioMixForCurrentState() {
-        if focusActive,
-           let targetRow = focusAudioTargetRowIndex,
-           targetRow >= 0,
-           targetRow < towerAudioIDs.count {
-            if !isFocusMixApplied {
-                print("[audio] focus mix on row \(targetRow)")
-            }
-            isFocusMixApplied = true
-            audio.setFocusMix(focusSourceID: towerAudioIDs[targetRow], focusSourceVolume: 1.0, otherSourcesVolume: 0.0)
-            return
-        }
-
-        if isFocusMixApplied {
-            print("[audio] return to normal mix")
-            audio.setNormalMix(defaultVolume: 0.25)
-            isFocusMixApplied = false
-        }
     }
 
     private func shootWeb(to side: Side) {
