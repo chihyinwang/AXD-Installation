@@ -47,6 +47,7 @@ final class GameARView: ARView {
     private let centerX: Float = 0
     private let groundY: Float = 0.12
     private let rooftopY: Float = 7.0
+    private let rooftopStartZ: Float = -14.0
     private let gravity: Float = 9.8
 
     // Swing behavior
@@ -118,7 +119,7 @@ final class GameARView: ARView {
 
     private var mode: PlayerMode = .rooftop
 
-    private var playerPos: SIMD3<Float> = [0, 4.0, 0]
+    private var playerPos: SIMD3<Float> = [0, 4.0, -14.0]
     private var playerVel: SIMD3<Float> = .zero
 
     private var swing: SwingState? = nil
@@ -191,7 +192,7 @@ final class GameARView: ARView {
         world.addChild(ground)
 
         // Player starts on the rooftop
-        playerPos = [centerX, rooftopY, 0]
+        playerPos = [centerX, rooftopY, rooftopStartZ]
         player.position = playerPos
         playerVel = .zero
         mode = .rooftop
@@ -277,7 +278,7 @@ final class GameARView: ARView {
             switch mode {
             case .rooftop:
                 // Standing still until the first Q/E attaches a web
-                playerPos = [centerX, rooftopY, 0]
+                playerPos = [centerX, rooftopY, rooftopStartZ]
                 playerVel = .zero
 
             case .swinging:
