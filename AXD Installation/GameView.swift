@@ -14,9 +14,14 @@ import AppKit
 
 struct GameView: NSViewRepresentable {
     var focusTiming: FocusTimingConfig = .default
+    var towerLayout: TowerLayoutConfig = .default
 
     func makeNSView(context: Context) -> GameARView {
-        GameARView(frame: .zero, focusTiming: focusTiming)
+        GameARView(
+            frame: .zero,
+            focusTiming: focusTiming,
+            towerLayout: towerLayout
+        )
     }
     func updateNSView(_ nsView: GameARView, context: Context) {}
 }
@@ -71,13 +76,7 @@ final class GameARView: ARView {
     private let minClearanceY: Float = 1.8      // Keep lowest swing point above ground by this margin
 
     // Tower layout
-    private let towerHeight: Float = 5.0
-
-    private let rowCount: Int = 12
-    private let rowSpacing: Float = 20
-
-    private let leftX: Float = -5
-    private let rightX: Float =  5
+    private let towerLayoutConfig: TowerLayoutConfig
 
     // Currently unused layout knobs (kept intentionally for future tuning/visual polish)
     private let laneInset: Float = 0.55
@@ -107,7 +106,7 @@ final class GameARView: ARView {
 
     private lazy var towerPrototype: ModelEntity = {
         let m = ModelEntity(
-            mesh: .generateBox(size: [0.25, towerHeight, 0.25]),
+            mesh: .generateBox(size: [0.25, towerLayoutConfig.towerHeight, 0.25]),
             materials: [SimpleMaterial(color: .white, isMetallic: false)]
         )
         return m
@@ -142,7 +141,12 @@ final class GameARView: ARView {
 
     // MARK: Init
 
-    init(frame frameRect: CGRect, focusTiming: FocusTimingConfig = .default) {
+    init(
+        frame frameRect: CGRect,
+        focusTiming: FocusTimingConfig = .default,
+        towerLayout: TowerLayoutConfig = .default
+    ) {
+        self.towerLayoutConfig = towerLayout
         self.focusStateMachine = FocusStateMachine(timing: focusTiming)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
@@ -154,6 +158,7 @@ final class GameARView: ARView {
     }
 
     @MainActor required init(frame frameRect: CGRect) {
+        self.towerLayoutConfig = .default
         self.focusStateMachine = FocusStateMachine(timing: .default)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
@@ -212,15 +217,15 @@ final class GameARView: ARView {
         // Generate rows of towers (alternating left/right)
         rows.removeAll()
 
-        for i in 0..<rowCount {
-            let z = -Float(i + 1) * rowSpacing
+        for i in 0..<towerLayoutConfig.rowCount {
+            let z = -Float(i + 1) * towerLayoutConfig.rowSpacing
 
             // Alternate: row 0 left, row 1 right, row 2 left, ...
             let side: Side = (i % 2 == 0) ? .left : .right
-            let x: Float = (side == .left) ? leftX : rightX
+            let x: Float = (side == .left) ? towerLayoutConfig.leftX : towerLayoutConfig.rightX
 
             let tower = towerPrototype.clone(recursive: true)
-            tower.position = [x, towerHeight * 0.5, z]
+            tower.position = [x, towerLayoutConfig.towerHeight * 0.5, z]
             world.addChild(tower)
 
             rows.append((tower: tower, z: z, side: side))
@@ -439,7 +444,7 @@ final class GameARView: ARView {
         let towerPos = tower.position(relativeTo: nil)
 
         // Anchor = top of tower + extra height (to increase swing angle)
-        let towerTopY = towerPos.y + towerHeight * 0.5
+        let towerTopY = towerPos.y + towerLayoutConfig.towerHeight * 0.5
         let anchor = SIMD3<Float>(towerPos.x, towerTopY + webAttachExtraHeight, towerPos.z)
 
         let dx = centerX - anchor.x
@@ -563,8 +568,8 @@ final class GameARView: ARView {
 
     private func makeGroundEntity() -> ModelEntity {
         // Ground size: wide enough for lanes; deep enough to cover the farthest tower row
-        let width: Float = max(10, abs(leftX) + abs(rightX) + 6)
-        let depth: Float = Float(rowCount + 3) * rowSpacing + 8
+        let width: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
+        let depth: Float = Float(towerLayoutConfig.rowCount + 3) * towerLayoutConfig.rowSpacing + 8
 
         let mesh = MeshResource.generateBox(size: [width, groundThickness, depth])
         let mat = SimpleMaterial(color: .gray, isMetallic: false)
