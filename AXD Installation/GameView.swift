@@ -59,7 +59,8 @@ final class GameARView: ARView {
     private let initialSwingSpeed: Float = 7.0
 
     // Focus ("五感世界") timing
-    private let focusTiming: FocusTimingConfig
+    private let focusStateMachine: FocusStateMachine
+    private var focusActive: Bool { focusStateMachine.isActive }
 
     // Web attach & rope constraints
     private let webAttachExtraHeight: Float = 1.8
@@ -126,9 +127,6 @@ final class GameARView: ARView {
 
     private var swing: SwingState? = nil
 
-    private var focusRemaining: Float = 0
-    private var focusDelayRemaining: Float = 0
-    private var focusActive: Bool { focusRemaining > 0 }
 
     // Optional: record which side the next tower is on (useful for debugging / player feedback)
     private var expectedNextSide: Side? = nil
@@ -145,7 +143,7 @@ final class GameARView: ARView {
     // MARK: Init
 
     init(frame frameRect: CGRect, focusTiming: FocusTimingConfig = .default) {
-        self.focusTiming = focusTiming
+        self.focusStateMachine = FocusStateMachine(timing: focusTiming)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         super.init(frame: frameRect)
@@ -156,7 +154,7 @@ final class GameARView: ARView {
     }
 
     @MainActor required init(frame frameRect: CGRect) {
-        self.focusTiming = .default
+        self.focusStateMachine = FocusStateMachine(timing: .default)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         super.init(frame: frameRect)
@@ -262,30 +260,18 @@ final class GameARView: ARView {
             guard let self else { return }
 
             let realDt = Float(event.deltaTime)
-
-            // 1) Focus delay countdown (uses real time)
-            if focusDelayRemaining > 0 {
-                focusDelayRemaining -= realDt
-                if focusDelayRemaining <= 0 {
-                    focusDelayRemaining = 0
-                    focusRemaining = focusTiming.duration
-                    print("[focus] start (delayed)")
-                }
+            let focusTickResult = focusStateMachine.tick(realDeltaTime: realDt)
+            if focusTickResult.didStart {
+                print("[focus] start (delayed)")
+            }
+            if focusTickResult.didEnd {
+                expectedNextSide = nil
+                audioMixController.clearFocusTarget()
+                print("[focus] end")
             }
 
-            // 2) Focus countdown (uses real time)
-            if focusRemaining > 0 {
-                focusRemaining -= realDt
-                if focusRemaining <= 0 {
-                    focusRemaining = 0
-                    expectedNextSide = nil
-                    audioMixController.clearFocusTarget()
-                    print("[focus] end")
-                }
-            }
-
-            // 3) Simulation dt: slowed only while focus is active
-            let dt = realDt * ((focusRemaining > 0) ? focusTiming.timeScale : 1.0)
+            // 1) Simulation dt: slowed only while focus is active
+            let dt = realDt * focusStateMachine.simulationTimeScale
 
             // --- Movement state machine ---
             switch mode {
@@ -348,8 +334,7 @@ final class GameARView: ARView {
                     mode = .falling
 
                     // Schedule focus to start after a short delay
-                    focusDelayRemaining = focusTiming.delay
-                    focusRemaining = 0
+                    focusStateMachine.scheduleAfterDelay()
 
                     let nextIndex = passedRow + 1
                     if nextIndex < rows.count {
@@ -424,7 +409,7 @@ final class GameARView: ARView {
 
         // Consume focus immediately on a successful shot (return to normal time)
         shootWeb(to: side)
-        focusRemaining = 0
+        focusStateMachine.reset()
         expectedNextSide = nil
         audioMixController.clearFocusTarget()
         print("[focus] consumed by shot")
