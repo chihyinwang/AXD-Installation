@@ -15,12 +15,14 @@ import AppKit
 struct GameView: NSViewRepresentable {
     var focusTiming: FocusTimingConfig = .default
     var towerLayout: TowerLayoutConfig = .default
+    var swingPhysics: SwingPhysicsConfig = .default
 
     func makeNSView(context: Context) -> GameARView {
         GameARView(
             frame: .zero,
             focusTiming: focusTiming,
-            towerLayout: towerLayout
+            towerLayout: towerLayout,
+            swingPhysics: swingPhysics
         )
     }
     func updateNSView(_ nsView: GameARView, context: Context) {}
@@ -60,20 +62,13 @@ final class GameARView: ARView {
     private let gravity: Float = 9.8
 
     // Swing behavior
-    private let detachAfterPassing: Float = 3.0
-    private let initialSwingSpeed: Float = 7.0
+    private let swingPhysicsConfig: SwingPhysicsConfig
 
     // Focus ("五感世界") timing
     private let focusStateMachine: FocusStateMachine
     private var focusActive: Bool { focusStateMachine.isActive }
 
-    // Web attach & rope constraints
-    private let webAttachExtraHeight: Float = 1.8
-
-    private let ropeScale: Float = 0.55         // < 1 shortens the measured rope length
-    private let ropeMinYZ: Float = 3.5          // Minimum rope length (YZ plane)
-    private let ropeMaxHard: Float = 8.0        // Hard upper bound
-    private let minClearanceY: Float = 1.8      // Keep lowest swing point above ground by this margin
+    // Web attach & rope constraints are read from swingPhysicsConfig
 
     // Tower layout
     private let towerLayoutConfig: TowerLayoutConfig
@@ -144,8 +139,10 @@ final class GameARView: ARView {
     init(
         frame frameRect: CGRect,
         focusTiming: FocusTimingConfig = .default,
-        towerLayout: TowerLayoutConfig = .default
+        towerLayout: TowerLayoutConfig = .default,
+        swingPhysics: SwingPhysicsConfig = .default
     ) {
+        self.swingPhysicsConfig = swingPhysics
         self.towerLayoutConfig = towerLayout
         self.focusStateMachine = FocusStateMachine(timing: focusTiming)
         self.audio = SpatialAudioRig()
@@ -158,6 +155,7 @@ final class GameARView: ARView {
     }
 
     @MainActor required init(frame frameRect: CGRect) {
+        self.swingPhysicsConfig = .default
         self.towerLayoutConfig = .default
         self.focusStateMachine = FocusStateMachine(timing: .default)
         self.audio = SpatialAudioRig()
@@ -325,9 +323,9 @@ final class GameARView: ARView {
                 updateWeb(from: playerPos, to: s.anchor)
 
                 // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
-                let farEnough = playerPos.z < s.towerZ - detachAfterPassing
+                let farEnough = playerPos.z < s.towerZ - swingPhysicsConfig.detachAfterPassing
                 let rising = playerVel.y > 0.4
-                let highEnough = playerPos.y > (groundY + minClearanceY + 0.6)
+                let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
 
                 if farEnough && rising && highEnough {
                     let passedRow = s.rowIndex
@@ -445,7 +443,7 @@ final class GameARView: ARView {
 
         // Anchor = top of tower + extra height (to increase swing angle)
         let towerTopY = towerPos.y + towerLayoutConfig.towerHeight * 0.5
-        let anchor = SIMD3<Float>(towerPos.x, towerTopY + webAttachExtraHeight, towerPos.z)
+        let anchor = SIMD3<Float>(towerPos.x, towerTopY + swingPhysicsConfig.webAttachExtraHeight, towerPos.z)
 
         let dx = centerX - anchor.x
         let dy = playerPos.y - anchor.y
@@ -455,11 +453,11 @@ final class GameARView: ARView {
         let measuredYZ = sqrt(yz2)
 
         // Keep lowest point above ground: lowest approx = anchor.y - ropeYZ
-        let maxByClearance = max(anchor.y - (groundY + minClearanceY), ropeMinYZ)
-        let ropeMax = min(ropeMaxHard, maxByClearance)
+        let maxByClearance = max(anchor.y - (groundY + swingPhysicsConfig.minClearanceY), swingPhysicsConfig.ropeMinYZ)
+        let ropeMax = min(swingPhysicsConfig.ropeMaxHard, maxByClearance)
 
         // Target rope length (scaled + clamped)
-        let ropeTargetYZ = min(max(measuredYZ * ropeScale, ropeMinYZ), ropeMax)
+        let ropeTargetYZ = min(max(measuredYZ * swingPhysicsConfig.ropeScale, swingPhysicsConfig.ropeMinYZ), ropeMax)
 
         // Current rope length starts at measuredYZ (keeps current position -> no teleport)
         let ropeCurrentYZ = measuredYZ
@@ -482,8 +480,8 @@ final class GameARView: ARView {
         let rN = radial / rLen
         let tangent = SIMD2<Float>(-rN.y, rN.x)
 
-        playerVel.y += tangent.x * initialSwingSpeed
-        playerVel.z += tangent.y * initialSwingSpeed
+        playerVel.y += tangent.x * swingPhysicsConfig.initialSwingSpeed
+        playerVel.z += tangent.y * swingPhysicsConfig.initialSwingSpeed
 
         print("[web] attach row=\(nextIndex) side=\(side) anchor=\(anchor)")
     }
