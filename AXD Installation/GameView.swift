@@ -35,8 +35,6 @@ final class GameARView: ARView {
     // MARK: Types
 
     private enum PlayerMode { case rooftop, swinging, falling, grounded }
-    private enum Side { case left, right }
-
     private struct SwingState {
         let anchor: SIMD3<Float>
         var ropeLengthYZ: Float       // Current rope length in the YZ plane (changes per frame via reel-in)
@@ -72,6 +70,10 @@ final class GameARView: ARView {
 
     // Tower layout
     private let towerLayoutConfig: TowerLayoutConfig
+    private let towerTrack: TowerTrack
+    
+    // Optional: record which side the next tower is on (useful for debugging / player feedback)
+    private var expectedNextSide: TowerSide? = nil
 
     // Currently unused layout knobs (kept intentionally for future tuning/visual polish)
     private let laneInset: Float = 0.55
@@ -121,13 +123,6 @@ final class GameARView: ARView {
 
     private var swing: SwingState? = nil
 
-
-    // Optional: record which side the next tower is on (useful for debugging / player feedback)
-    private var expectedNextSide: Side? = nil
-
-    private var rows: [(tower: ModelEntity, z: Float, side: Side)] = []
-    private var currentRow: Int = -1
-
     private var autoMove: AutoMove? = nil
 
     // WASD scaffolding (currently only keyUp removes keys; keyDown is dedicated to Q/E)
@@ -144,6 +139,7 @@ final class GameARView: ARView {
     ) {
         self.swingPhysicsConfig = swingPhysics
         self.towerLayoutConfig = towerLayout
+        self.towerTrack = TowerTrack(layout: towerLayout)
         self.focusStateMachine = FocusStateMachine(timing: focusTiming)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
@@ -157,6 +153,7 @@ final class GameARView: ARView {
     @MainActor required init(frame frameRect: CGRect) {
         self.swingPhysicsConfig = .default
         self.towerLayoutConfig = .default
+        self.towerTrack = TowerTrack(layout: .default)
         self.focusStateMachine = FocusStateMachine(timing: .default)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
@@ -213,27 +210,13 @@ final class GameARView: ARView {
         world.addChild(player)
 
         // Generate rows of towers (alternating left/right)
-        rows.removeAll()
-
-        for i in 0..<towerLayoutConfig.rowCount {
-            let z = -Float(i + 1) * towerLayoutConfig.rowSpacing
-
-            // Alternate: row 0 left, row 1 right, row 2 left, ...
-            let side: Side = (i % 2 == 0) ? .left : .right
-            let x: Float = (side == .left) ? towerLayoutConfig.leftX : towerLayoutConfig.rightX
-
-            let tower = towerPrototype.clone(recursive: true)
-            tower.position = [x, towerLayoutConfig.towerHeight * 0.5, z]
-            world.addChild(tower)
-
-            rows.append((tower: tower, z: z, side: side))
-        }
+        towerTrack.rebuild(in: world, prototype: towerPrototype)
 
         // Spatial audio: one looping source per tower, listener follows player
         audio.configure(loopFileName: "tower_loop_mono1", fileExt: "wav")
 
-        for row in rows {
-            let sourceID = audio.addLoopingSource(at: row.tower.position(relativeTo: nil))
+        for node in towerTrack.nodes {
+            let sourceID = audio.addLoopingSource(at: node.tower.position(relativeTo: nil))
             audioMixController.registerTowerSource(sourceID)
         }
 
@@ -340,8 +323,8 @@ final class GameARView: ARView {
                     focusStateMachine.scheduleAfterDelay()
 
                     let nextIndex = passedRow + 1
-                    if nextIndex < rows.count {
-                        expectedNextSide = rows[nextIndex].side
+                    if let nextSide = towerTrack.side(at: nextIndex) {
+                        expectedNextSide = nextSide
                         audioMixController.setFocusTargetRowIndex(nextIndex)
                         print("[focus] will start after delay. next side should be \(expectedNextSide!)")
                     } else {
@@ -385,7 +368,7 @@ final class GameARView: ARView {
 
     // MARK: Input gating (Q/E -> attemptShoot -> shootWeb)
 
-    private func attemptShoot(_ side: Side) {
+    private func attemptShoot(_ side: TowerSide) {
         // 1) Block shooting while grounded (prevents underground swinging)
         if mode == .grounded {
             print("[shoot] blocked (grounded/dead)")
@@ -418,27 +401,19 @@ final class GameARView: ARView {
         print("[focus] consumed by shot")
     }
 
-    private func shootWeb(to side: Side) {
+    private func shootWeb(to side: TowerSide) {
         // Target the next row
-        let nextIndex: Int
-        if let s = swing {
-            nextIndex = s.rowIndex + 1
-        } else {
-            nextIndex = currentRow + 1
-        }
-
-        guard nextIndex >= 0 && nextIndex < rows.count else {
+        let nextIndex = towerTrack.nextIndex(fromSwingRow: swing?.rowIndex)
+        guard let node = towerTrack.node(at: nextIndex) else {
             print("[web] no next tower")
             return
         }
-
-        let row = rows[nextIndex]
-        guard row.side == side else {
-            print("[web] wrong side. next is \(row.side), you pressed \(side)")
+        guard node.side == side else {
+            print("[web] wrong side. next is \(node.side), you pressed \(side)")
             return
         }
 
-        let tower = row.tower
+        let tower = node.tower
         let towerPos = tower.position(relativeTo: nil)
 
         // Anchor = top of tower + extra height (to increase swing angle)
@@ -470,7 +445,7 @@ final class GameARView: ARView {
 
         print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
                      measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
-        currentRow = nextIndex
+        towerTrack.registerAttach(rowIndex: nextIndex)
         mode = .swinging
 
         // Add initial tangential velocity in the YZ plane to ensure forward swing
