@@ -34,7 +34,6 @@ final class GameARView: ARView {
 
     // MARK: Types
 
-    private enum PlayerMode { case rooftop, swinging, falling, grounded }
     private struct SwingState {
         let anchor: SIMD3<Float>
         var ropeLengthYZ: Float       // Current rope length in the YZ plane (changes per frame via reel-in)
@@ -113,10 +112,9 @@ final class GameARView: ARView {
 
     private let audio: SpatialAudioRig
     private let audioMixController: TowerAudioMixController
+    private let gameStateMachine = GameStateMachine()
 
     // MARK: Runtime state
-
-    private var mode: PlayerMode = .rooftop
 
     private var playerPos: SIMD3<Float> = [0, 4.0, -14.0]
     private var playerVel: SIMD3<Float> = .zero
@@ -206,7 +204,7 @@ final class GameARView: ARView {
         playerPos = [centerX, rooftopY, rooftopStartZ]
         player.position = playerPos
         playerVel = .zero
-        mode = .rooftop
+        gameStateMachine.transition(to: .rooftop)
         world.addChild(player)
 
         // Generate rows of towers (alternating left/right)
@@ -246,137 +244,160 @@ final class GameARView: ARView {
             guard let self else { return }
 
             let realDt = Float(event.deltaTime)
-            let focusTickResult = focusStateMachine.tick(realDeltaTime: realDt)
-            if focusTickResult.didStart {
-                print("[focus] start (delayed)")
-            }
-            if focusTickResult.didEnd {
+            handleFocusTick(realDt: realDt)
+            let dt = realDt * focusStateMachine.simulationTimeScale
+            updatePlayerState(dt: dt)
+            applyFrameOutputs()
+        }
+    }
+
+    private func handleFocusTick(realDt: Float) {
+        let focusTickResult = focusStateMachine.tick(realDeltaTime: realDt)
+        if focusTickResult.didStart {
+            print("[focus] start (delayed)")
+        }
+        if focusTickResult.didEnd {
+            expectedNextSide = nil
+            audioMixController.clearFocusTarget()
+            print("[focus] end")
+        }
+    }
+
+    private func updatePlayerState(dt: Float) {
+        switch gameStateMachine.state {
+        case .rooftop:
+            handleRooftopState()
+        case .swinging:
+            handleSwingingState(dt: dt)
+        case .falling:
+            handleFallingState(dt: dt)
+        case .grounded:
+            handleGroundedState()
+        }
+    }
+
+    private func handleRooftopState() {
+        // Standing still until the first Q/E attaches a web
+        playerPos = [centerX, rooftopY, rooftopStartZ]
+        playerVel = .zero
+    }
+
+    private func handleSwingingState(dt: Float) {
+        guard var s = swing else {
+            gameStateMachine.transition(to: .falling)
+            return
+        }
+
+        // 0) Reel-in: move ropeLengthYZ toward ropeTargetYZ gradually (prevents teleport)
+        let reelSpeed: Float = 6.0
+        let diff = s.ropeTargetYZ - s.ropeLengthYZ
+        let reelStep = max(min(diff, reelSpeed * dt), -reelSpeed * dt)
+        s.ropeLengthYZ += reelStep
+
+        // 1) Integrate motion in the YZ plane
+        var p2 = SIMD2<Float>(playerPos.y - s.anchor.y, playerPos.z - s.anchor.z)
+        var v2 = SIMD2<Float>(playerVel.y, playerVel.z)
+
+        // Gravity affects Y (p2.x)
+        v2.x += -gravity * dt
+        p2 += v2 * dt
+
+        // 2) Constraint: project position onto the circle (radius = ropeLengthYZ)
+        let r = max(simd_length(p2), 0.001)
+        p2 *= (s.ropeLengthYZ / r)
+
+        // 3) Remove radial velocity (keep tangential component)
+        let radial = p2 / s.ropeLengthYZ
+        let vRad = simd_dot(v2, radial)
+        v2 -= vRad * radial
+
+        // Small damping (optional)
+        v2 *= 0.999
+
+        // 4) Write back to 3D (X locked to center line)
+        playerPos.x = centerX
+        playerPos.y = s.anchor.y + p2.x
+        playerPos.z = s.anchor.z + p2.y
+        playerVel.y = v2.x
+        playerVel.z = v2.y
+
+        // 5) Update web every frame (sticks to player + anchor)
+        updateWeb(from: playerPos, to: s.anchor)
+
+        // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
+        let farEnough = playerPos.z < s.towerZ - swingPhysicsConfig.detachAfterPassing
+        let rising = playerVel.y > 0.4
+        let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
+
+        if farEnough && rising && highEnough {
+            let passedRow = s.rowIndex
+            print(String(format: "[web] detach y=%.2f z=%.2f vy=%.2f vz=%.2f",
+                         playerPos.y, playerPos.z, playerVel.y, playerVel.z))
+
+            swing = nil
+            hideWeb()
+            gameStateMachine.transition(to: .falling)
+
+            // Schedule focus to start after a short delay
+            focusStateMachine.scheduleAfterDelay()
+
+            let nextIndex = passedRow + 1
+            if let nextSide = towerTrack.side(at: nextIndex) {
+                expectedNextSide = nextSide
+                audioMixController.setFocusTargetRowIndex(nextIndex)
+                print("[focus] will start after delay. next side should be \(expectedNextSide!)")
+            } else {
                 expectedNextSide = nil
                 audioMixController.clearFocusTarget()
-                print("[focus] end")
+                print("[focus] will start after delay (no next tower)")
             }
-
-            // 1) Simulation dt: slowed only while focus is active
-            let dt = realDt * focusStateMachine.simulationTimeScale
-
-            // --- Movement state machine ---
-            switch mode {
-            case .rooftop:
-                // Standing still until the first Q/E attaches a web
-                playerPos = [centerX, rooftopY, rooftopStartZ]
-                playerVel = .zero
-
-            case .swinging:
-                guard var s = swing else { mode = .falling; break }
-
-                // 0) Reel-in: move ropeLengthYZ toward ropeTargetYZ gradually (prevents teleport)
-                let reelSpeed: Float = 6.0
-                let diff = s.ropeTargetYZ - s.ropeLengthYZ
-                let reelStep = max(min(diff, reelSpeed * dt), -reelSpeed * dt)
-                s.ropeLengthYZ += reelStep
-
-                // 1) Integrate motion in the YZ plane
-                var p2 = SIMD2<Float>(playerPos.y - s.anchor.y, playerPos.z - s.anchor.z)
-                var v2 = SIMD2<Float>(playerVel.y, playerVel.z)
-
-                // Gravity affects Y (p2.x)
-                v2.x += -gravity * dt
-                p2 += v2 * dt
-
-                // 2) Constraint: project position onto the circle (radius = ropeLengthYZ)
-                let r = max(simd_length(p2), 0.001)
-                p2 *= (s.ropeLengthYZ / r)
-
-                // 3) Remove radial velocity (keep tangential component)
-                let radial = p2 / s.ropeLengthYZ
-                let vRad = simd_dot(v2, radial)
-                v2 -= vRad * radial
-
-                // Small damping (optional)
-                v2 *= 0.999
-
-                // 4) Write back to 3D (X locked to center line)
-                playerPos.x = centerX
-                playerPos.y = s.anchor.y + p2.x
-                playerPos.z = s.anchor.z + p2.y
-                playerVel.y = v2.x
-                playerVel.z = v2.y
-
-                // 5) Update web every frame (sticks to player + anchor)
-                updateWeb(from: playerPos, to: s.anchor)
-
-                // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
-                let farEnough = playerPos.z < s.towerZ - swingPhysicsConfig.detachAfterPassing
-                let rising = playerVel.y > 0.4
-                let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
-
-                if farEnough && rising && highEnough {
-                    let passedRow = s.rowIndex
-                    print(String(format: "[web] detach y=%.2f z=%.2f vy=%.2f vz=%.2f",
-                                 playerPos.y, playerPos.z, playerVel.y, playerVel.z))
-
-                    swing = nil
-                    hideWeb()
-                    mode = .falling
-
-                    // Schedule focus to start after a short delay
-                    focusStateMachine.scheduleAfterDelay()
-
-                    let nextIndex = passedRow + 1
-                    if let nextSide = towerTrack.side(at: nextIndex) {
-                        expectedNextSide = nextSide
-                        audioMixController.setFocusTargetRowIndex(nextIndex)
-                        print("[focus] will start after delay. next side should be \(expectedNextSide!)")
-                    } else {
-                        expectedNextSide = nil
-                        audioMixController.clearFocusTarget()
-                        print("[focus] will start after delay (no next tower)")
-                    }
-                    break
-                }
-
-                // Persist updated rope length
-                swing = s
-
-            case .falling:
-                // Free fall until hitting the ground
-                playerVel.y += -gravity * dt
-                playerPos += playerVel * dt
-                playerPos.x = centerX
-
-                if playerPos.y <= groundY {
-                    playerPos.y = groundY
-                    playerVel = .zero
-                    mode = .grounded
-                }
-
-            case .grounded:
-                // Grounded state (no movement yet)
-                playerPos.x = centerX
-                playerPos.y = groundY
-            }
-
-            // Apply transform to the entity
-            player.position = playerPos
-            updateCameraFollow()
-
-            // Listener always follows the player
-            audio.setListenerPosition(playerPos)
-            audioMixController.updateMix(isFocusActive: focusActive)
+            return
         }
+
+        // Persist updated rope length
+        swing = s
+    }
+
+    private func handleFallingState(dt: Float) {
+        // Free fall until hitting the ground
+        playerVel.y += -gravity * dt
+        playerPos += playerVel * dt
+        playerPos.x = centerX
+
+        if playerPos.y <= groundY {
+            playerPos.y = groundY
+            playerVel = .zero
+            gameStateMachine.transition(to: .grounded)
+        }
+    }
+
+    private func handleGroundedState() {
+        // Grounded state (no movement yet)
+        playerPos.x = centerX
+        playerPos.y = groundY
+    }
+
+    private func applyFrameOutputs() {
+        // Apply transform to the entity
+        player.position = playerPos
+        updateCameraFollow()
+
+        // Listener always follows the player
+        audio.setListenerPosition(playerPos)
+        audioMixController.updateMix(isFocusActive: focusActive)
     }
 
     // MARK: Input gating (Q/E -> attemptShoot -> shootWeb)
 
     private func attemptShoot(_ side: TowerSide) {
         // 1) Block shooting while grounded (prevents underground swinging)
-        if mode == .grounded {
+        if gameStateMachine.isGrounded {
             print("[shoot] blocked (grounded/dead)")
             return
         }
 
         // 2) First shot is allowed from rooftop
-        if mode == .rooftop {
+        if gameStateMachine.isRooftop {
             shootWeb(to: side)
             return
         }
@@ -446,7 +467,7 @@ final class GameARView: ARView {
         print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
                      measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
         towerTrack.registerAttach(rowIndex: nextIndex)
-        mode = .swinging
+        gameStateMachine.transition(to: .swinging)
 
         // Add initial tangential velocity in the YZ plane to ensure forward swing
         // radial = (dy, dz), tangent = (-dz, dy) normalized
