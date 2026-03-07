@@ -108,11 +108,10 @@ final class GameARView: ARView {
         return m
     }()
 
-    private var webEntity: ModelEntity? = nil
-
     private let audio: SpatialAudioRig
     private let audioMixController: TowerAudioMixController
     private let gameStateMachine = GameStateMachine()
+    private let webRenderer: WebRenderer
 
     // MARK: Runtime state
 
@@ -141,6 +140,7 @@ final class GameARView: ARView {
         self.focusStateMachine = FocusStateMachine(timing: focusTiming)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
+        self.webRenderer = WebRenderer(world: world)
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -155,6 +155,7 @@ final class GameARView: ARView {
         self.focusStateMachine = FocusStateMachine(timing: .default)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
+        self.webRenderer = WebRenderer(world: world)
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -322,7 +323,7 @@ final class GameARView: ARView {
         playerVel.z = v2.y
 
         // 5) Update web every frame (sticks to player + anchor)
-        updateWeb(from: playerPos, to: s.anchor)
+        webRenderer.updateWeb(from: playerPos, to: s.anchor)
 
         // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
         let farEnough = playerPos.z < s.towerZ - swingPhysicsConfig.detachAfterPassing
@@ -335,7 +336,7 @@ final class GameARView: ARView {
                          playerPos.y, playerPos.z, playerVel.y, playerVel.z))
 
             swing = nil
-            hideWeb()
+            webRenderer.hideWeb()
             gameStateMachine.transition(to: .falling)
 
             // Schedule focus to start after a short delay
@@ -480,69 +481,6 @@ final class GameARView: ARView {
         playerVel.z += tangent.y * swingPhysicsConfig.initialSwingSpeed
 
         print("[web] attach row=\(nextIndex) side=\(side) anchor=\(anchor)")
-    }
-
-    // MARK: Web rendering (entity creation/update/removal)
-
-    private func showWeb(from start: SIMD3<Float>, to end: SIMD3<Float>) {
-        // One-shot creation (kept for reference; current gameplay uses updateWeb each frame)
-        webEntity?.removeFromParent()
-        webEntity = nil
-
-        let dir = end - start
-        let length = simd_length(dir)
-        guard length > 0.001 else { return }
-
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.01)
-        let mat  = SimpleMaterial(color: .white, isMetallic: false)
-        let web  = ModelEntity(mesh: mesh, materials: [mat])
-
-        // Cylinder height is along local Y; scale Y to match length
-        web.scale = [1, length, 1]
-
-        // Place at midpoint
-        let mid = (start + end) * 0.5
-        web.position = mid
-
-        // Rotate local (0,1,0) to match direction
-        let n = dir / length
-        web.orientation = simd_quatf(from: [0, 1, 0], to: n)
-
-        world.addChild(web)
-        webEntity = web
-    }
-
-    private func ensureWebEntity() -> ModelEntity {
-        if let w = webEntity { return w }
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.01)
-        let mat  = SimpleMaterial(color: .white, isMetallic: false)
-        let w = ModelEntity(mesh: mesh, materials: [mat])
-        world.addChild(w)
-        webEntity = w
-        return w
-    }
-
-    private func updateWeb(from start: SIMD3<Float>, to end: SIMD3<Float>) {
-        let dir = end - start
-        let length = simd_length(dir)
-        if length < 0.001 { return }
-
-        let w = ensureWebEntity()
-
-        // Place at midpoint
-        w.position = (start + end) * 0.5
-
-        // Rotate cylinder local Y axis to direction
-        let n = dir / length
-        w.orientation = simd_quatf(from: [0, 1, 0], to: n)
-
-        // Scale height to length
-        w.scale = [1, length, 1]
-    }
-
-    private func hideWeb() {
-        webEntity?.removeFromParent()
-        webEntity = nil
     }
 
     // MARK: Camera
