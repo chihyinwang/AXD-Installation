@@ -42,13 +42,6 @@ final class GameARView: ARView {
         let rowIndex: Int
     }
 
-    private struct AutoMove {
-        var start: SIMD3<Float>
-        var end: SIMD3<Float>
-        var elapsed: Float
-        var duration: Float
-    }
-
     // MARK: Configuration (tuning knobs)
 
     // Core world / physics
@@ -74,21 +67,12 @@ final class GameARView: ARView {
     // Optional: record which side the next tower is on (useful for debugging / player feedback)
     private var expectedNextSide: TowerSide? = nil
 
-    // Currently unused layout knobs (kept intentionally for future tuning/visual polish)
-    private let laneInset: Float = 0.55
-    private let landingZOffset: Float = 0.4
-    private let swingArcHeight: Float = 0.8
-
     // Ground mesh
     private let groundThickness: Float = 0.05
-
-    // Legacy/unused (kept to avoid altering any behavior/structure)
-    private let playerCenterX: Float = 0
 
     // MARK: Scene entities (RealityKit graph)
 
     private var updateSub: Cancellable?
-    private var seconds: Double = 0
 
     private let world = AnchorEntity(world: .zero)
 
@@ -119,12 +103,6 @@ final class GameARView: ARView {
     private var playerVel: SIMD3<Float> = .zero
 
     private var swing: SwingState? = nil
-
-    private var autoMove: AutoMove? = nil
-
-    // WASD scaffolding (currently only keyUp removes keys; keyDown is dedicated to Q/E)
-    private var pressed: Set<PlayerMotion.InputKey> = []
-    private var motion = PlayerMotion(position: [0, 0.12, 0], speed: 2.0, fixedY: 0.12)
 
     // MARK: Init
 
@@ -183,13 +161,6 @@ final class GameARView: ARView {
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
         if c == "q" { attemptShoot(.left); return }
         if c == "e" { attemptShoot(.right); return }
-    }
-
-    override func keyUp(with event: NSEvent) {
-        if let k = mapKey(event) {
-            pressed.remove(k)
-            print("[keys] up   =", pressed)
-        }
     }
 
     // MARK: Scene setup
@@ -512,27 +483,4 @@ final class GameARView: ARView {
         return ground
     }
 
-    // MARK: Helpers
-
-    private func mapKey(_ event: NSEvent) -> PlayerMotion.InputKey? {
-        // Prefer characters (keyboard-layout friendly), fall back to keyCode
-        if let c = event.charactersIgnoringModifiers?.lowercased() {
-            switch c {
-            case "w": return .w
-            case "a": return .a
-            case "s": return .s
-            case "d": return .d
-            default: break
-            }
-        }
-
-        // Common US keyboard keyCodes: W=13 A=0 S=1 D=2
-        switch event.keyCode {
-        case 13: return .w
-        case 0:  return .a
-        case 1:  return .s
-        case 2:  return .d
-        default: return nil
-        }
-    }
 }
