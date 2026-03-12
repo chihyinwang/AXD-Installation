@@ -50,11 +50,13 @@ final class GameARView: ARView {
     private let rooftopY: Float = 7.0
     private let rooftopStartZ: Float = -14.0
     private let gravity: Float = 9.8
+    private let cameraVisibilityExtraDistance: Float = 8.0
+    private let cameraVisibilityMinDistance: Float = 4.0
 
     // Swing behavior
     private let swingPhysicsConfig: SwingPhysicsConfig
 
-    // Focus ("五感世界") timing
+    // Focus mode timing
     private let focusStateMachine: FocusStateMachine
     private var focusActive: Bool { focusStateMachine.isActive }
 
@@ -83,6 +85,11 @@ final class GameARView: ARView {
 
     private let camera = PerspectiveCamera()
     private let cameraAnchor = AnchorEntity(world: .zero)
+    private let visibilityMaskSphere: ModelEntity = {
+        let mesh = MeshResource.generateSphere(radius: 1.0)
+        let material = UnlitMaterial(color: .black)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
 
     private lazy var towerPrototype: ModelEntity = {
         let m = ModelEntity(
@@ -203,8 +210,13 @@ final class GameARView: ARView {
 
         // Camera setup
         camera.camera.fieldOfViewInDegrees = 60
+        camera.camera.near = 0.05
+        camera.camera.far = 500
         camera.position = .zero
 
+        // Inverted sphere around the camera: keeps near objects visible and masks far objects to black.
+        visibilityMaskSphere.position = .zero
+        cameraAnchor.addChild(visibilityMaskSphere)
         cameraAnchor.addChild(camera)
         scene.addAnchor(cameraAnchor)
     }
@@ -490,6 +502,18 @@ final class GameARView: ARView {
 
         cameraAnchor.position = camPos
         cameraAnchor.look(at: target, from: camPos, relativeTo: nil)
+        updateVisibilityMaskRadius(cameraPosition: camPos)
+    }
+
+    private func updateVisibilityMaskRadius(cameraPosition: SIMD3<Float>) {
+        let cameraToPlayerDistance = simd_distance(cameraPosition, playerPos)
+        let maskRadius = max(
+            cameraVisibilityMinDistance,
+            cameraToPlayerDistance + cameraVisibilityExtraDistance
+        )
+
+        // Flip winding with negative X scale so the inner surface renders from inside the sphere.
+        visibilityMaskSphere.scale = [-maskRadius, maskRadius, maskRadius]
     }
 
     // MARK: Ground

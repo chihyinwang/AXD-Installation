@@ -35,7 +35,7 @@ final class SpatialAudioRig {
         rolloffFactor: 0.8
     )
 
-    // 1) 先建好音訊圖（graph）：environment -> mainMixer
+    // 1) Build the audio graph first: environment -> mainMixer.
     func configure(loopFileName: String = "tower_loop_mono1", fileExt: String = "wav") {
         guard !started else { return }
 
@@ -45,17 +45,17 @@ final class SpatialAudioRig {
         let monoBuffer = loadLoopBufferNamed(loopFileName, ext: fileExt)
         self.loopBuffer = monoBuffer
 
-        // 環境：HRTF + 距離衰減參數（你已經驗證有效）
+        // Environment settings: HRTF and distance attenuation.
         environment.renderingAlgorithm = .HRTF
         environment.distanceAttenuationParameters.distanceAttenuationModel = .inverse
         applyAttenuation(normalAttenuation)
-        // distanceAttenuationParameters / model 是掛在 environment 上
+        // Distance attenuation parameters are configured on the environment node.
         // :contentReference[oaicite:0]{index=0}
 
         print("[audio] configured. sr=\(monoBuffer.format.sampleRate) ch=\(monoBuffer.format.channelCount)")
     }
 
-    // 2) 每個 tower 都加一個 looping 3D source
+    // 2) Add one looping 3D source for each tower.
     @discardableResult
     func addLoopingSource(at position: SIMD3<Float>, volume: Float = 0.25) -> UUID {
         guard let buf = loopBuffer else {
@@ -68,7 +68,7 @@ final class SpatialAudioRig {
         engine.attach(node)
         engine.connect(node, to: environment, format: buf.format)
 
-        // 重要：Environment 只會把「mono 連線格式」做空間化，所以我們強制用 mono buffer
+        // Important: AVAudioEnvironmentNode spatializes mono input, so force a mono buffer.
         // :contentReference[oaicite:1]{index=1}
         node.renderingAlgorithm = .HRTF
         node.sourceMode = .spatializeIfMono
@@ -85,7 +85,7 @@ final class SpatialAudioRig {
         return id
     }
 
-    // 3) 啟動引擎並讓所有 sources 開始播放
+    // 3) Start the engine and begin playback for all sources.
     func start() {
         guard !started else { return }
         started = true
@@ -108,19 +108,9 @@ final class SpatialAudioRig {
         started = false
     }
 
-    // listener 每幀更新
+    // Update listener position every frame.
     func setListenerPosition(_ p: SIMD3<Float>) {
         environment.listenerPosition = AVAudio3DPoint(x: p.x, y: p.y, z: p.z)
-    }
-
-    // 如果你之後要做「listener 朝向」再用（現在先不用）
-    func setListenerYawRadians(_ yaw: Float) {
-        environment.listenerAngularOrientation = AVAudio3DAngularOrientation(yaw: yaw, pitch: 0, roll: 0)
-    }
-
-    // （可選）如果你未來 tower 會動，可用 id 更新 position
-    func setSourcePosition(id: UUID, _ p: SIMD3<Float>) {
-        sources[id]?.position = AVAudio3DPoint(x: p.x, y: p.y, z: p.z)
     }
 
     func setNormalMix(defaultVolume: Float? = nil) {
@@ -153,7 +143,7 @@ final class SpatialAudioRig {
         }
     }
 
-    // MARK: - Loading & downmix (避免 channel mismatch)
+    // MARK: - Loading & Downmix (avoid channel mismatch)
     private func loadLoopBufferNamed(_ name: String, ext: String) -> AVAudioPCMBuffer {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
             fatalError("Missing audio file in bundle: \(name).\(ext)")
