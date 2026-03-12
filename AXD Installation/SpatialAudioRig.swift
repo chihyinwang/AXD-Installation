@@ -141,6 +141,18 @@ final class SpatialAudioRig {
         applyAttenuation(focusAttenuation)
     }
 
+    func restartAllLoopsFromBeginning() {
+        guard let buf = loopBuffer else { return }
+
+        for (_, node) in sources {
+            node.stop()
+            node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
+            if started {
+                node.play()
+            }
+        }
+    }
+
     // MARK: - Loading & downmix (避免 channel mismatch)
     private func loadLoopBufferNamed(_ name: String, ext: String) -> AVAudioPCMBuffer {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {

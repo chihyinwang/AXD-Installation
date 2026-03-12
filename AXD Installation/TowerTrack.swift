@@ -54,5 +54,8 @@ final class TowerTrack {
     func registerAttach(rowIndex: Int) {
         currentRowIndex = rowIndex
     }
-}
 
+    func resetProgress() {
+        currentRowIndex = -1
+    }
+}

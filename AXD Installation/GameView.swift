@@ -161,6 +161,7 @@ final class GameARView: ARView {
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
         if c == "q" { attemptShoot(.left); return }
         if c == "e" { attemptShoot(.right); return }
+        if c == "r" { restartGame(); return }
     }
 
     // MARK: Scene setup
@@ -357,6 +358,30 @@ final class GameARView: ARView {
         // Listener always follows the player
         audio.setListenerPosition(playerPos)
         audioMixController.updateMix(isFocusActive: focusActive)
+    }
+
+    private func restartGame() {
+        print("[game] restart")
+
+        // Reset core gameplay state
+        swing = nil
+        gameStateMachine.transition(to: .rooftop)
+        playerPos = [centerX, rooftopY, rooftopStartZ]
+        playerVel = .zero
+
+        // Reset progression / focus / guidance
+        towerTrack.resetProgress()
+        focusStateMachine.reset()
+        expectedNextSide = nil
+
+        // Reset presentation systems
+        webRenderer.hideWeb()
+        audioMixController.clearFocusTarget()
+        audioMixController.resetToNormalMix()
+        audio.restartAllLoopsFromBeginning()
+
+        // Apply immediately so restart is visually/audio consistent in the same frame
+        applyFrameOutputs()
     }
 
     // MARK: Input gating (Q/E -> attemptShoot -> shootWeb)
