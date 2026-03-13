@@ -188,6 +188,7 @@ final class GameARView: ARView {
 
         let ground = makeGroundEntity()
         world.addChild(ground)
+        addStreetReferenceProps()
 
         // Player starts on the rooftop
         playerPos = [centerX, rooftopY, rooftopStartZ]
@@ -679,12 +680,66 @@ final class GameARView: ARView {
         let depth: Float = Float(towerLayoutConfig.rowCount + 3) * towerLayoutConfig.rowSpacing + 8
 
         let mesh = MeshResource.generateBox(size: [width, groundThickness, depth])
-        let mat = SimpleMaterial(color: .gray, isMetallic: false)
+        let mat = SimpleMaterial(color: .darkGray, isMetallic: false)
         let ground = ModelEntity(mesh: mesh, materials: [mat])
 
         // Place so the top surface is at y=0, extending from z=0 forward into negative Z
         ground.position = [0, -groundThickness * 0.5, -depth * 0.5]
         return ground
+    }
+
+    private func addStreetReferenceProps() {
+        let roadWidth: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
+        let roadDepth: Float = Float(towerLayoutConfig.rowCount + 3) * towerLayoutConfig.rowSpacing + 8
+        let lineY: Float = 0.01
+
+        let edgeLineMat = SimpleMaterial(color: .white, isMetallic: false)
+        let centerLineMat = SimpleMaterial(color: .yellow, isMetallic: false)
+
+        // Left and right solid lane boundary lines.
+        let edgeLineSize = SIMD3<Float>(0.10, 0.005, roadDepth)
+        let leftEdgeLine = ModelEntity(mesh: .generateBox(size: edgeLineSize), materials: [edgeLineMat])
+        leftEdgeLine.position = [-(roadWidth * 0.5) + 0.5, lineY, -roadDepth * 0.5]
+        world.addChild(leftEdgeLine)
+
+        let rightEdgeLine = ModelEntity(mesh: .generateBox(size: edgeLineSize), materials: [edgeLineMat])
+        rightEdgeLine.position = [(roadWidth * 0.5) - 0.5, lineY, -roadDepth * 0.5]
+        world.addChild(rightEdgeLine)
+
+        // Dashed center line to provide strong speed reference.
+        let dashLength: Float = 2.0
+        let gapLength: Float = 2.0
+        let dashStride = dashLength + gapLength
+        let dashCount = Int(roadDepth / dashStride)
+        let centerDashSize = SIMD3<Float>(0.14, 0.005, dashLength)
+
+        for i in 0..<dashCount {
+            let z = -((Float(i) + 0.5) * dashStride)
+            let dash = ModelEntity(mesh: .generateBox(size: centerDashSize), materials: [centerLineMat])
+            dash.position = [0, lineY, z]
+            world.addChild(dash)
+        }
+
+        // Simple parked-car blocks as nearby scale references.
+        let carBodyColors: [NSColor] = [.systemBlue, .systemRed, .systemGray, .systemGreen]
+        let carBodySize = SIMD3<Float>(1.8, 1.0, 3.8)
+        let carSideX = (roadWidth * 0.5) - 1.6
+
+        for i in 0..<6 {
+            let color = carBodyColors[i % carBodyColors.count]
+            let carMat = SimpleMaterial(color: color, isMetallic: false)
+            let z = -(18 + Float(i) * 24)
+
+            let rightCar = ModelEntity(mesh: .generateBox(size: carBodySize), materials: [carMat])
+            rightCar.position = [carSideX, 0.5, z]
+            world.addChild(rightCar)
+
+            if i % 2 == 0 {
+                let leftCar = ModelEntity(mesh: .generateBox(size: carBodySize), materials: [carMat])
+                leftCar.position = [-carSideX, 0.5, z - 10]
+                world.addChild(leftCar)
+            }
+        }
     }
 
 }
