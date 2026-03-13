@@ -32,37 +32,13 @@ struct GameView: NSViewRepresentable {
 
 final class GameARView: ARView {
 
-    // MARK: Types
-
-    private struct SwingState {
-        let anchor: SIMD3<Float>
-        var ropeLengthYZ: Float       // Current rope length in the YZ plane (changes per frame via reel-in)
-        let ropeTargetYZ: Float       // Target rope length in the YZ plane (computed once on attach)
-        let towerZ: Float
-        let rowIndex: Int
-        let side: TowerSide
-    }
-
     // MARK: Configuration (tuning knobs)
 
     // Core world / physics
-    private let centerX: Float = 0
-    private let groundY: Float = 0.12
-    private let rooftopY: Float = 7.0
-    private let rooftopStartZ: Float = -14.0
-    private let gravity: Float = 9.8
-    private let cameraVisibilityExtraDistance: Float = 8.0
-    private let cameraVisibilityMinDistance: Float = 4.0
-    private let rearTowerAudibleDistance: Float = 6.0
-    private let audioHorizontalExaggeration: Float = 2.0
-    private let audioAssistTriggerDistance: Float = 16.0
-    private let audioAssistFullBlendDistance: Float = 7.0
-    private let audioAssistLateralOffset: Float = 3.2
-    private let audioAssistForwardOffset: Float = 1.4
-    private let audioFocusLateralOffset: Float = 7.4
-    private let audioFocusHeightOffset: Float = 0.2
-    private let releaseWindowDepth: Float = 6.0
-    private let releaseCueHeight: Float = 1.1
+    private let worldPhysicsConfig: WorldPhysicsConfig = .default
+    private let audioGuidanceConfig: AudioGuidanceConfig = .default
+    private let releaseConfig: ReleaseConfig = .default
+    private let cameraFollowConfig: CameraFollowConfig = .default
 
     // Swing behavior
     private let swingPhysicsConfig: SwingPhysicsConfig
@@ -203,7 +179,7 @@ final class GameARView: ARView {
         addStreetReferenceProps()
 
         // Player starts on the rooftop
-        playerPos = [centerX, rooftopY, rooftopStartZ]
+        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
         player.position = playerPos
         playerVel = .zero
         gameStateMachine.transition(to: .rooftop)
@@ -290,7 +266,7 @@ final class GameARView: ARView {
 
     private func handleRooftopState() {
         // Standing still until the first Q/E attaches a web
-        playerPos = [centerX, rooftopY, rooftopStartZ]
+        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
         playerVel = .zero
     }
 
@@ -300,8 +276,17 @@ final class GameARView: ARView {
             return
         }
 
-        // 0) Reel-in: move ropeLengthYZ toward ropeTargetYZ gradually (prevents teleport)
-        let reelSpeed: Float = 6.0
+        // 0) Dynamic reel-in:
+        // Keep the motion natural by tightening rope faster when approaching ground,
+        // instead of hard-clamping player height.
+        let dynamicRopeMax = max(
+            s.anchor.y - (worldPhysicsConfig.groundY + swingPhysicsConfig.minClearanceY + releaseConfig.swingGroundSafetyMargin),
+            swingPhysicsConfig.ropeMinYZ
+        )
+        s.ropeTargetYZ = min(s.ropeTargetYZ, dynamicRopeMax)
+
+        let groundProximity = max(0, (worldPhysicsConfig.groundY + swingPhysicsConfig.minClearanceY + 0.9) - playerPos.y)
+        let reelSpeed: Float = 6.0 + groundProximity * 10.0
         let diff = s.ropeTargetYZ - s.ropeLengthYZ
         let reelStep = max(min(diff, reelSpeed * dt), -reelSpeed * dt)
         s.ropeLengthYZ += reelStep
@@ -311,7 +296,7 @@ final class GameARView: ARView {
         var v2 = SIMD2<Float>(playerVel.y, playerVel.z)
 
         // Gravity affects Y (p2.x)
-        v2.x += -gravity * dt
+        v2.x += -worldPhysicsConfig.gravity * dt
         p2 += v2 * dt
 
         // 2) Constraint: project position onto the circle (radius = ropeLengthYZ)
@@ -327,7 +312,7 @@ final class GameARView: ARView {
         v2 *= 0.999
 
         // 4) Write back to 3D (X locked to center line)
-        playerPos.x = centerX
+        playerPos.x = worldPhysicsConfig.centerX
         playerPos.y = s.anchor.y + p2.x
         playerPos.z = s.anchor.z + p2.y
         playerVel.y = v2.x
@@ -348,12 +333,12 @@ final class GameARView: ARView {
 
     private func handleFallingState(dt: Float) {
         // Free fall until hitting the ground
-        playerVel.y += -gravity * dt
+        playerVel.y += -worldPhysicsConfig.gravity * dt
         playerPos += playerVel * dt
-        playerPos.x = centerX
+        playerPos.x = worldPhysicsConfig.centerX
 
-        if playerPos.y <= groundY {
-            playerPos.y = groundY
+        if playerPos.y <= worldPhysicsConfig.groundY {
+            playerPos.y = worldPhysicsConfig.groundY
             playerVel = .zero
             gameStateMachine.transition(to: .grounded)
         }
@@ -361,8 +346,8 @@ final class GameARView: ARView {
 
     private func handleGroundedState() {
         // Grounded state (no movement yet)
-        playerPos.x = centerX
-        playerPos.y = groundY
+        playerPos.x = worldPhysicsConfig.centerX
+        playerPos.y = worldPhysicsConfig.groundY
     }
 
     private func applyFrameOutputs(realDeltaTime: Float) {
@@ -383,11 +368,6 @@ final class GameARView: ARView {
         audioMixController.updateMix(isFocusActive: focusActive, deltaTime: realDeltaTime)
     }
 
-    private struct AudioGuidance {
-        let targetRowIndex: Int
-        let blend: Float
-    }
-
     private func audioGuidance(for playerPosition: SIMD3<Float>) -> AudioGuidance? {
         guard let targetRowIndex = guidedTargetRowIndex,
               let targetNode = towerTrack.node(at: targetRowIndex) else {
@@ -400,8 +380,8 @@ final class GameARView: ARView {
 
         let towerPosition = targetNode.tower.position(relativeTo: nil)
         let distanceToTarget = simd_distance(playerPosition, towerPosition)
-        let denom = max(audioAssistTriggerDistance - audioAssistFullBlendDistance, 0.001)
-        let rawBlend = (audioAssistTriggerDistance - distanceToTarget) / denom
+        let denom = max(audioGuidanceConfig.assistTriggerDistance - audioGuidanceConfig.assistFullBlendDistance, 0.001)
+        let rawBlend = (audioGuidanceConfig.assistTriggerDistance - distanceToTarget) / denom
         let blend = max(0.0, min(rawBlend, 1.0))
         if blend <= 0.0 {
             return nil
@@ -445,7 +425,7 @@ final class GameARView: ARView {
     }
 
     private func exaggeratedAudioPosition(from worldPosition: SIMD3<Float>) -> SIMD3<Float> {
-        let x = centerX + (worldPosition.x - centerX) * audioHorizontalExaggeration
+        let x = worldPhysicsConfig.centerX + (worldPosition.x - worldPhysicsConfig.centerX) * audioGuidanceConfig.horizontalExaggeration
         return SIMD3<Float>(x, worldPosition.y, worldPosition.z)
     }
 
@@ -459,16 +439,16 @@ final class GameARView: ARView {
         if isFocusGuidance {
         // Focus guide: emphasize left/right, but keep real tower depth so passing-by sensation remains.
         return SIMD3<Float>(
-            playerPosition.x + sideSign * audioFocusLateralOffset,
-            playerPosition.y + audioFocusHeightOffset,
+            playerPosition.x + sideSign * audioGuidanceConfig.focusLateralOffset,
+            playerPosition.y + audioGuidanceConfig.focusHeightOffset,
             towerPosition.z
         )
         }
 
         return SIMD3<Float>(
-            playerPosition.x + sideSign * audioAssistLateralOffset,
+            playerPosition.x + sideSign * audioGuidanceConfig.assistLateralOffset,
             towerPosition.y,
-            playerPosition.z - audioAssistForwardOffset
+            playerPosition.z - audioGuidanceConfig.assistForwardOffset
         )
     }
 
@@ -483,7 +463,7 @@ final class GameARView: ARView {
             let zDelta = towerPosition.z - position.z
 
             // Keep towers audible if they are in front, or only slightly behind the player.
-            if zDelta > rearTowerAudibleDistance {
+            if zDelta > audioGuidanceConfig.rearTowerAudibleDistance {
                 continue
             }
 
@@ -519,7 +499,7 @@ final class GameARView: ARView {
         // Reset core gameplay state
         swing = nil
         gameStateMachine.transition(to: .rooftop)
-        playerPos = [centerX, rooftopY, rooftopStartZ]
+        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
         playerVel = .zero
 
         // Reset progression / focus / guidance
@@ -612,7 +592,7 @@ final class GameARView: ARView {
         let towerTopY = towerPos.y + towerLayoutConfig.towerHeight * 0.5
         let anchor = SIMD3<Float>(towerPos.x, towerTopY + swingPhysicsConfig.webAttachExtraHeight, towerPos.z)
 
-        let dx = centerX - anchor.x
+        let dx = worldPhysicsConfig.centerX - anchor.x
         let dy = playerPos.y - anchor.y
         let dz = playerPos.z - anchor.z
         let L2 = dx*dx + dy*dy + dz*dz
@@ -620,7 +600,7 @@ final class GameARView: ARView {
         let measuredYZ = sqrt(yz2)
 
         // Keep lowest point above ground: lowest approx = anchor.y - ropeYZ
-        let maxByClearance = max(anchor.y - (groundY + swingPhysicsConfig.minClearanceY), swingPhysicsConfig.ropeMinYZ)
+        let maxByClearance = max(anchor.y - (worldPhysicsConfig.groundY + swingPhysicsConfig.minClearanceY), swingPhysicsConfig.ropeMinYZ)
         let ropeMax = min(swingPhysicsConfig.ropeMaxHard, maxByClearance)
 
         // Target rope length (scaled + clamped)
@@ -656,16 +636,16 @@ final class GameARView: ARView {
 
     private func isSuccessfulReleaseWindow(swingState: SwingState) -> Bool {
         let releaseStartZ = swingState.towerZ - swingPhysicsConfig.detachAfterPassing
-        let releaseEndZ = releaseStartZ - releaseWindowDepth
+        let releaseEndZ = releaseStartZ - releaseConfig.windowDepth
         let withinReleaseDepth = playerPos.z <= releaseStartZ && playerPos.z >= releaseEndZ
         let rising = playerVel.y > 0.4
-        let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
+        let highEnough = playerPos.y > (worldPhysicsConfig.groundY + swingPhysicsConfig.minClearanceY + 0.6)
         return withinReleaseDepth && rising && highEnough
     }
 
     private func hasMissedReleaseWindow(swingState: SwingState) -> Bool {
         let releaseStartZ = swingState.towerZ - swingPhysicsConfig.detachAfterPassing
-        let releaseEndZ = releaseStartZ - releaseWindowDepth
+        let releaseEndZ = releaseStartZ - releaseConfig.windowDepth
         let passedReleaseEnd = playerPos.z < releaseEndZ
         let passedStartAndDescending = (playerPos.z <= releaseStartZ) && (playerVel.y <= 0)
         return passedReleaseEnd || passedStartAndDescending
@@ -677,7 +657,7 @@ final class GameARView: ARView {
             return
         }
 
-        releaseCueIndicator.position = playerPos + SIMD3<Float>(0, releaseCueHeight, 0)
+        releaseCueIndicator.position = playerPos + SIMD3<Float>(0, releaseConfig.cueHeight, 0)
         releaseCueIndicator.scale = SIMD3<Float>(repeating: 1.0)
         let cueColor: NSColor = isSuccessfulReleaseWindow(swingState: swing) ? .systemGreen : .systemYellow
         releaseCueIndicator.model?.materials = [UnlitMaterial(color: cueColor)]
@@ -685,6 +665,12 @@ final class GameARView: ARView {
 
     private func releaseWeb(successful: Bool, swingState: SwingState) {
         let passedRow = swingState.rowIndex
+
+        if successful {
+            // Keep successful releases readable: prevent excessive upward launch when releasing late.
+            playerVel.y = min(playerVel.y, releaseConfig.upwardVelocityCap)
+        }
+
         swing = nil
         webRenderer.hideWeb()
         gameStateMachine.transition(to: .falling)
@@ -716,10 +702,22 @@ final class GameARView: ARView {
     // MARK: Camera
 
     private func updateCameraFollow() {
-        // Offset behind & above player (forward is -Z, so "behind" is +Z)
-        let offset: SIMD3<Float> = [0, 1.6, 3.2]
+        // Offset behind & above player (forward is -Z, so "behind" is +Z).
+        // At high altitude, pull camera farther back and aim lower to keep ground references visible.
+        let highAltitude = min(
+            max(0, playerPos.y - cameraFollowConfig.highAltitudeThreshold),
+            cameraFollowConfig.highAltitudeCap
+        )
+        let extraBack = highAltitude * cameraFollowConfig.extraBackPerHighMeter
+        let extraHeight = highAltitude * cameraFollowConfig.extraHeightPerHighMeter
+        let lookDownBias = highAltitude * cameraFollowConfig.lookDownBiasPerHighMeter
+        let offset: SIMD3<Float> = [
+            0,
+            cameraFollowConfig.baseHeight + extraHeight,
+            cameraFollowConfig.baseBackDistance + extraBack
+        ]
 
-        let target = playerPos
+        let target = playerPos + SIMD3<Float>(0, -lookDownBias, 0)
         let camPos = target + offset
 
         cameraAnchor.position = camPos
@@ -730,8 +728,8 @@ final class GameARView: ARView {
     private func updateVisibilityMaskRadius(cameraPosition: SIMD3<Float>) {
         let cameraToPlayerDistance = simd_distance(cameraPosition, playerPos)
         let maskRadius = max(
-            cameraVisibilityMinDistance,
-            cameraToPlayerDistance + cameraVisibilityExtraDistance
+            cameraFollowConfig.visibilityMinDistance,
+            cameraToPlayerDistance + cameraFollowConfig.visibilityExtraDistance
         )
 
         // Flip winding with negative X scale so the inner surface renders from inside the sphere.
@@ -809,3 +807,4 @@ final class GameARView: ARView {
     }
 
 }
+
