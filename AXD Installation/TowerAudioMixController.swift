@@ -10,9 +10,9 @@ struct TowerAudioMixSettings {
     let focusFadeOutDuration: Float
 
     static let `default` = TowerAudioMixSettings(
-        activeTowerVolume: 2.0,
-        backgroundVolumeNormal: 0.01,
-        backgroundVolumeInFocus: 0.001,
+        activeTowerVolume: 4.0,
+        backgroundVolumeNormal: 0.04,
+        backgroundVolumeInFocus: 0.004,
         focusGuideCueVolume: 0.22,
         focusFadeInDuration: 0.12,
         focusFadeOutDuration: 0.22

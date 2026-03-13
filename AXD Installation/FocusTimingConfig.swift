@@ -6,9 +6,8 @@ struct FocusTimingConfig {
     let delay: Float
 
     static let `default` = FocusTimingConfig(
-        duration: 1.8,
-        timeScale: 0.25,
+        duration: 5.0,
+        timeScale: 0.15,
         delay: 0.55
     )
 }
-
