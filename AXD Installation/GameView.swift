@@ -40,6 +40,7 @@ final class GameARView: ARView {
         let ropeTargetYZ: Float       // Target rope length in the YZ plane (computed once on attach)
         let towerZ: Float
         let rowIndex: Int
+        let side: TowerSide
     }
 
     // MARK: Configuration (tuning knobs)
@@ -60,6 +61,8 @@ final class GameARView: ARView {
     private let audioAssistForwardOffset: Float = 1.4
     private let audioFocusLateralOffset: Float = 7.4
     private let audioFocusHeightOffset: Float = 0.2
+    private let releaseWindowDepth: Float = 6.0
+    private let releaseCueHeight: Float = 1.1
 
     // Swing behavior
     private let swingPhysicsConfig: SwingPhysicsConfig
@@ -98,6 +101,13 @@ final class GameARView: ARView {
         let mesh = MeshResource.generateSphere(radius: 1.0)
         let material = UnlitMaterial(color: .black)
         return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let releaseCueIndicator: ModelEntity = {
+        let mesh = MeshResource.generateSphere(radius: 0.12)
+        let material = UnlitMaterial(color: .yellow)
+        let indicator = ModelEntity(mesh: mesh, materials: [material])
+        indicator.scale = .zero
+        return indicator
     }()
 
     private lazy var towerPrototype: ModelEntity = {
@@ -176,8 +186,10 @@ final class GameARView: ARView {
 
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
         if c == "q" { attemptShoot(.left); return }
+        if c == "w" { attemptRelease(.left); return }
         if c == "e" { attemptShoot(.right); return }
-        if c == "r" { restartGame(); return }
+        if c == "r" { attemptRelease(.right); return }
+        if c == "g" { restartGame(); return }
     }
 
     // MARK: Scene setup
@@ -196,6 +208,7 @@ final class GameARView: ARView {
         playerVel = .zero
         gameStateMachine.transition(to: .rooftop)
         world.addChild(player)
+        world.addChild(releaseCueIndicator)
 
         // Generate rows of towers
         towerTrack.rebuild(in: world, prototype: towerPrototype)
@@ -323,36 +336,9 @@ final class GameARView: ARView {
         // 5) Update web every frame (sticks to player + anchor)
         webRenderer.updateWeb(from: playerPos, to: s.anchor)
 
-        // 6) Detach later, while rising, and not too low (to emphasize airtime + visible arc)
-        let farEnough = playerPos.z < s.towerZ - swingPhysicsConfig.detachAfterPassing
-        let rising = playerVel.y > 0.4
-        let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
-
-        if farEnough && rising && highEnough {
-            let passedRow = s.rowIndex
-            print(String(format: "[web] detach y=%.2f z=%.2f vy=%.2f vz=%.2f",
-                         playerPos.y, playerPos.z, playerVel.y, playerVel.z))
-
-            swing = nil
-            webRenderer.hideWeb()
-            gameStateMachine.transition(to: .falling)
-            audioMixController.fadeOutTowerRow(passedRow, duration: 0.5)
-
-            // Schedule focus to start after a short delay
-            focusStateMachine.scheduleAfterDelay()
-
-            let nextIndex = passedRow + 1
-            if let nextSide = towerTrack.side(at: nextIndex) {
-                expectedNextSide = nextSide
-                guidedTargetRowIndex = nextIndex
-                audioMixController.setFocusTargetRowIndex(nextIndex)
-                print("[focus] will start after delay. next side should be \(expectedNextSide!)")
-            } else {
-                expectedNextSide = nil
-                guidedTargetRowIndex = nil
-                audioMixController.clearFocusTarget()
-                print("[focus] will start after delay (no next tower)")
-            }
+        if hasMissedReleaseWindow(swingState: s) {
+            print("[web] release window missed -> fail drop")
+            releaseWeb(successful: false, swingState: s)
             return
         }
 
@@ -386,6 +372,7 @@ final class GameARView: ARView {
 
         // Listener always follows the player
         audio.setListenerPosition(playerPos)
+        updateReleaseCueIndicator()
         let guidance = audioGuidance(for: playerPos)
         updateTowerAudioSourcePositions()
         updateGuideAudioSource(playerPosition: playerPos, guidance: guidance)
@@ -587,6 +574,25 @@ final class GameARView: ARView {
         print("[focus] consumed by shot")
     }
 
+    private func attemptRelease(_ side: TowerSide) {
+        guard let swing else { return }
+        guard gameStateMachine.state == .swinging else { return }
+        guard swing.side == side else {
+            print("[web] release ignored. swing side=\(swing.side), input=\(side)")
+            return
+        }
+
+        let successful = isSuccessfulReleaseWindow(swingState: swing)
+        if successful {
+            print(String(format: "[web] good release y=%.2f z=%.2f vy=%.2f vz=%.2f",
+                         playerPos.y, playerPos.z, playerVel.y, playerVel.z))
+        } else {
+            print(String(format: "[web] early/late release -> fail y=%.2f z=%.2f vy=%.2f vz=%.2f",
+                         playerPos.y, playerPos.z, playerVel.y, playerVel.z))
+        }
+        releaseWeb(successful: successful, swingState: swing)
+    }
+
     private func shootWeb(to side: TowerSide) {
         // Target the next row
         let nextIndex = towerTrack.nextIndex(fromSwingRow: swing?.rowIndex)
@@ -627,7 +633,8 @@ final class GameARView: ARView {
                            ropeLengthYZ: ropeCurrentYZ,
                            ropeTargetYZ: ropeTargetYZ,
                            towerZ: towerPos.z,
-                           rowIndex: nextIndex)
+                           rowIndex: nextIndex,
+                           side: side)
 
         print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
                      measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
@@ -645,6 +652,65 @@ final class GameARView: ARView {
         playerVel.z += tangent.y * swingPhysicsConfig.initialSwingSpeed
 
         print("[web] attach row=\(nextIndex) side=\(side) anchor=\(anchor)")
+    }
+
+    private func isSuccessfulReleaseWindow(swingState: SwingState) -> Bool {
+        let releaseStartZ = swingState.towerZ - swingPhysicsConfig.detachAfterPassing
+        let releaseEndZ = releaseStartZ - releaseWindowDepth
+        let withinReleaseDepth = playerPos.z <= releaseStartZ && playerPos.z >= releaseEndZ
+        let rising = playerVel.y > 0.4
+        let highEnough = playerPos.y > (groundY + swingPhysicsConfig.minClearanceY + 0.6)
+        return withinReleaseDepth && rising && highEnough
+    }
+
+    private func hasMissedReleaseWindow(swingState: SwingState) -> Bool {
+        let releaseStartZ = swingState.towerZ - swingPhysicsConfig.detachAfterPassing
+        let releaseEndZ = releaseStartZ - releaseWindowDepth
+        let passedReleaseEnd = playerPos.z < releaseEndZ
+        let passedStartAndDescending = (playerPos.z <= releaseStartZ) && (playerVel.y <= 0)
+        return passedReleaseEnd || passedStartAndDescending
+    }
+
+    private func updateReleaseCueIndicator() {
+        guard let swing, gameStateMachine.state == .swinging else {
+            releaseCueIndicator.scale = .zero
+            return
+        }
+
+        releaseCueIndicator.position = playerPos + SIMD3<Float>(0, releaseCueHeight, 0)
+        releaseCueIndicator.scale = SIMD3<Float>(repeating: 1.0)
+        let cueColor: NSColor = isSuccessfulReleaseWindow(swingState: swing) ? .systemGreen : .systemYellow
+        releaseCueIndicator.model?.materials = [UnlitMaterial(color: cueColor)]
+    }
+
+    private func releaseWeb(successful: Bool, swingState: SwingState) {
+        let passedRow = swingState.rowIndex
+        swing = nil
+        webRenderer.hideWeb()
+        gameStateMachine.transition(to: .falling)
+        audioMixController.fadeOutTowerRow(passedRow, duration: 0.5)
+
+        if successful {
+            focusStateMachine.scheduleAfterDelay()
+            let nextIndex = passedRow + 1
+            if let nextSide = towerTrack.side(at: nextIndex) {
+                expectedNextSide = nextSide
+                guidedTargetRowIndex = nextIndex
+                audioMixController.setFocusTargetRowIndex(nextIndex)
+                print("[focus] will start after delay. next side should be \(expectedNextSide!)")
+            } else {
+                expectedNextSide = nil
+                guidedTargetRowIndex = nil
+                audioMixController.clearFocusTarget()
+                print("[focus] will start after delay (no next tower)")
+            }
+            return
+        }
+
+        focusStateMachine.reset()
+        expectedNextSide = nil
+        guidedTargetRowIndex = nil
+        audioMixController.clearFocusTarget()
     }
 
     // MARK: Camera
