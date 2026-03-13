@@ -23,10 +23,11 @@ final class TowerTrack {
     func rebuild(in world: Entity, prototype: ModelEntity) {
         nodes.removeAll()
         currentRowIndex = -1
+        var rng = SystemRandomNumberGenerator()
 
         for i in 0..<layout.rowCount {
             let z = -Float(i + 1) * layout.rowSpacing
-            let side: TowerSide = (i % 2 == 0) ? .left : .right
+            let side: TowerSide = Bool.random(using: &rng) ? .left : .right
             let x: Float = (side == .left) ? layout.leftX : layout.rightX
 
             let tower = prototype.clone(recursive: true)

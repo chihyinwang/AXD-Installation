@@ -15,8 +15,9 @@ final class SpatialAudioRig {
 
     private var loopBuffer: AVAudioPCMBuffer?
     private var sources: [UUID: AVAudioPlayerNode] = [:]
+    private var backgroundBuffer: AVAudioPCMBuffer?
+    private var backgroundNode: AVAudioPlayerNode?
     private var started = false
-    private var defaultSourceVolume: Float = 0.25
 
     private struct AttenuationProfile {
         let referenceDistance: Float
@@ -29,14 +30,9 @@ final class SpatialAudioRig {
         maximumDistance: 30,
         rolloffFactor: 3.0
     )
-    private let focusAttenuation = AttenuationProfile(
-        referenceDistance: 2.5,
-        maximumDistance: 80,
-        rolloffFactor: 0.8
-    )
 
     // 1) Build the audio graph first: environment -> mainMixer.
-    func configure(loopFileName: String = "tower_loop_mono1", fileExt: String = "wav") {
+    func configure(loopFileName: String, fileExt: String = "wav") {
         guard !started else { return }
 
         engine.attach(environment)
@@ -74,7 +70,6 @@ final class SpatialAudioRig {
         node.sourceMode = .spatializeIfMono
         node.reverbBlend = 0.0
         node.volume = volume
-        defaultSourceVolume = volume
 
         node.position = AVAudio3DPoint(x: position.x, y: position.y, z: position.z)
 
@@ -83,6 +78,41 @@ final class SpatialAudioRig {
 
         sources[id] = node
         return id
+    }
+
+    @discardableResult
+    func configureBackgroundLoop(fileName: String, fileExt: String) -> Bool {
+        guard backgroundNode == nil else { return true }
+
+        guard let url = Bundle.main.url(forResource: fileName, withExtension: fileExt) else {
+            print("[audio] background file not found: \(fileName).\(fileExt)")
+            return false
+        }
+
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let format = file.processingFormat
+            let frameCount = AVAudioFrameCount(file.length)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                print("[audio] background buffer allocation failed")
+                return false
+            }
+            try file.read(into: buffer)
+            buffer.frameLength = frameCount
+
+            let node = AVAudioPlayerNode()
+            node.volume = 0.0
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: format)
+            node.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
+
+            backgroundBuffer = buffer
+            backgroundNode = node
+            return true
+        } catch {
+            print("[audio] background loading failed: \(error)")
+            return false
+        }
     }
 
     // 3) Start the engine and begin playback for all sources.
@@ -99,11 +129,13 @@ final class SpatialAudioRig {
         for (_, node) in sources {
             node.play()
         }
+        backgroundNode?.play()
         print("[audio] started. sourceCount=\(sources.count)")
     }
 
     func stop() {
         for (_, node) in sources { node.stop() }
+        backgroundNode?.stop()
         engine.stop()
         started = false
     }
@@ -113,22 +145,18 @@ final class SpatialAudioRig {
         environment.listenerPosition = AVAudio3DPoint(x: p.x, y: p.y, z: p.z)
     }
 
-    func setNormalMix(defaultVolume: Float? = nil) {
-        if let defaultVolume {
-            self.defaultSourceVolume = defaultVolume
-        }
-
-        for (_, node) in sources {
-            node.volume = self.defaultSourceVolume
-        }
-        applyAttenuation(normalAttenuation)
+    func setSourcePosition(sourceID: UUID, position: SIMD3<Float>) {
+        guard let node = sources[sourceID] else { return }
+        node.position = AVAudio3DPoint(x: position.x, y: position.y, z: position.z)
     }
 
-    func setFocusMix(focusSourceID: UUID, focusSourceVolume: Float = 0.5, otherSourcesVolume: Float = 0.0) {
-        for (id, node) in sources {
-            node.volume = (id == focusSourceID) ? focusSourceVolume : otherSourcesVolume
-        }
-        applyAttenuation(focusAttenuation)
+    func setSourceVolume(sourceID: UUID, volume: Float) {
+        guard let node = sources[sourceID] else { return }
+        node.volume = max(0.0, volume)
+    }
+
+    func setBackgroundVolume(_ volume: Float) {
+        backgroundNode?.volume = max(0.0, volume)
     }
 
     func restartAllLoopsFromBeginning() {
@@ -139,6 +167,14 @@ final class SpatialAudioRig {
             node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
             if started {
                 node.play()
+            }
+        }
+
+        if let backgroundNode, let backgroundBuffer {
+            backgroundNode.stop()
+            backgroundNode.scheduleBuffer(backgroundBuffer, at: nil, options: [.loops], completionHandler: nil)
+            if started {
+                backgroundNode.play()
             }
         }
     }

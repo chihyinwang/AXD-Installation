@@ -1,29 +1,55 @@
 import Foundation
+import simd
+
+struct TowerAudioMixSettings {
+    let activeTowerVolume: Float
+    let backgroundVolumeNormal: Float
+    let backgroundVolumeInFocus: Float
+    let focusGuideCueVolume: Float
+    let focusFadeInDuration: Float
+    let focusFadeOutDuration: Float
+
+    static let `default` = TowerAudioMixSettings(
+        activeTowerVolume: 2.0,
+        backgroundVolumeNormal: 0.01,
+        backgroundVolumeInFocus: 0.001,
+        focusGuideCueVolume: 0.22,
+        focusFadeInDuration: 0.12,
+        focusFadeOutDuration: 0.22
+    )
+}
 
 final class TowerAudioMixController {
     private let audio: SpatialAudioRig
     private var towerAudioIDs: [UUID] = []
+    private var towerFadeMultipliers: [Float] = []
+    private var towerFadeOutSpeeds: [Float] = []
+    private var guideSourceID: UUID? = nil
     private var focusTargetRowIndex: Int? = nil
-    private var isFocusMixApplied = false
+    private var nearestAudibleRowIndex: Int? = nil
+    private var guideBlendTarget: Float = 0.0
+    private var guideBlendCurrent: Float = 0.0
+    private var focusAmount: Float = 0.0
 
-    private let normalVolume: Float
-    private let focusVolume: Float
-    private let otherVolumeInFocus: Float
+    private let settings: TowerAudioMixSettings
 
     init(
         audio: SpatialAudioRig,
-        normalVolume: Float = 0.25,
-        focusVolume: Float = 1.0,
-        otherVolumeInFocus: Float = 0.0
+        settings: TowerAudioMixSettings = .default
     ) {
         self.audio = audio
-        self.normalVolume = normalVolume
-        self.focusVolume = focusVolume
-        self.otherVolumeInFocus = otherVolumeInFocus
+        self.settings = settings
     }
 
     func registerTowerSource(_ id: UUID) {
         towerAudioIDs.append(id)
+        towerFadeMultipliers.append(0.0)
+        towerFadeOutSpeeds.append(0.0)
+    }
+
+    func registerGuideSource(_ id: UUID) {
+        guideSourceID = id
+        audio.setSourceVolume(sourceID: id, volume: 0.0)
     }
 
     func setFocusTargetRowIndex(_ rowIndex: Int?) {
@@ -34,32 +60,99 @@ final class TowerAudioMixController {
         focusTargetRowIndex = nil
     }
 
-    func resetToNormalMix() {
-        audio.setNormalMix(defaultVolume: normalVolume)
-        isFocusMixApplied = false
+    func setGuideBlend(_ blend: Float) {
+        guideBlendTarget = max(0.0, min(blend, 1.0))
     }
 
-    func updateMix(isFocusActive: Bool) {
-        if isFocusActive,
-           let targetRow = focusTargetRowIndex,
-           targetRow >= 0,
-           targetRow < towerAudioIDs.count {
-            if !isFocusMixApplied {
-                print("[audio] focus mix on row \(targetRow)")
-            }
-            isFocusMixApplied = true
-            audio.setFocusMix(
-                focusSourceID: towerAudioIDs[targetRow],
-                focusSourceVolume: focusVolume,
-                otherSourcesVolume: otherVolumeInFocus
-            )
-            return
+    func setGuideSourcePosition(_ position: SIMD3<Float>) {
+        guard let guideSourceID else { return }
+        audio.setSourcePosition(sourceID: guideSourceID, position: position)
+    }
+
+    func setNearestAudibleRowIndex(_ rowIndex: Int?) {
+        nearestAudibleRowIndex = rowIndex
+    }
+
+    func fadeOutTowerRow(_ rowIndex: Int, duration: Float) {
+        guard rowIndex >= 0, rowIndex < towerFadeMultipliers.count else { return }
+        let clampedDuration = max(duration, 0.001)
+        if towerFadeMultipliers[rowIndex] < 1.0 {
+            towerFadeMultipliers[rowIndex] = 1.0
+        }
+        let current = towerFadeMultipliers[rowIndex]
+        towerFadeOutSpeeds[rowIndex] = current / clampedDuration
+    }
+
+    func resetToNormalMix() {
+        focusAmount = 0.0
+        guideBlendTarget = 0.0
+        guideBlendCurrent = 0.0
+        audio.setBackgroundVolume(settings.backgroundVolumeNormal)
+        for i in towerAudioIDs.indices {
+            towerFadeMultipliers[i] = 0.0
+            towerFadeOutSpeeds[i] = 0.0
+            audio.setSourceVolume(sourceID: towerAudioIDs[i], volume: 0.0)
+        }
+        if let guideSourceID {
+            audio.setSourceVolume(sourceID: guideSourceID, volume: 0.0)
+        }
+    }
+
+    func sourceID(forRowIndex rowIndex: Int) -> UUID? {
+        guard rowIndex >= 0, rowIndex < towerAudioIDs.count else { return nil }
+        return towerAudioIDs[rowIndex]
+    }
+
+    func updateMix(isFocusActive: Bool, deltaTime: Float) {
+        advanceTowerFades(deltaTime: deltaTime)
+
+        let targetFocusAmount: Float = isFocusActive ? 1.0 : 0.0
+        let transitionDuration = (targetFocusAmount > focusAmount) ? settings.focusFadeInDuration : settings.focusFadeOutDuration
+        let blendStep = min(max(deltaTime / max(transitionDuration, 0.001), 0.0), 1.0)
+        focusAmount += (targetFocusAmount - focusAmount) * blendStep
+        guideBlendCurrent += (guideBlendTarget - guideBlendCurrent) * blendStep
+
+        let backgroundVolume = settings.backgroundVolumeNormal
+            + (settings.backgroundVolumeInFocus - settings.backgroundVolumeNormal) * focusAmount
+        audio.setBackgroundVolume(backgroundVolume)
+
+        let leadRowIndex = activeLeadRowIndex(isFocusActive: isFocusActive)
+
+        for (rowIndex, id) in towerAudioIDs.enumerated() {
+            let isNearest = (rowIndex == leadRowIndex)
+            let fadeMultiplier = towerFadeMultipliers[rowIndex]
+            let volume: Float = isNearest
+                ? settings.activeTowerVolume
+                : (settings.activeTowerVolume * fadeMultiplier)
+            audio.setSourceVolume(sourceID: id, volume: volume)
         }
 
-        if isFocusMixApplied {
-            print("[audio] return to normal mix")
-            resetToNormalMix()
+        if let guideSourceID {
+            let guideVolume = settings.focusGuideCueVolume * guideBlendCurrent * focusAmount
+            audio.setSourceVolume(sourceID: guideSourceID, volume: guideVolume)
+        }
+    }
+
+    private func activeLeadRowIndex(isFocusActive: Bool) -> Int? {
+        if isFocusActive,
+           let focusTargetRowIndex,
+           focusTargetRowIndex >= 0,
+           focusTargetRowIndex < towerAudioIDs.count {
+            return focusTargetRowIndex
+        }
+        return nearestAudibleRowIndex
+    }
+
+    private func advanceTowerFades(deltaTime: Float) {
+        guard deltaTime > 0 else { return }
+        for i in towerFadeMultipliers.indices {
+            let speed = towerFadeOutSpeeds[i]
+            if speed <= 0 { continue }
+            let next = max(0.0, towerFadeMultipliers[i] - speed * deltaTime)
+            towerFadeMultipliers[i] = next
+            if next <= 0.0 {
+                towerFadeOutSpeeds[i] = 0.0
+            }
         }
     }
 }
-
