@@ -8,6 +8,8 @@ struct TowerAudioMixSettings {
     let focusGuideCueVolume: Float
     let focusFadeInDuration: Float
     let focusFadeOutDuration: Float
+    let leadSwitchTailLevel: Float
+    let leadSwitchTailFadeDuration: Float
 
     static let `default` = TowerAudioMixSettings(
         activeTowerVolume: 4.0,
@@ -15,7 +17,9 @@ struct TowerAudioMixSettings {
         backgroundVolumeInFocus: 0.004,
         focusGuideCueVolume: 0.22,
         focusFadeInDuration: 0.12,
-        focusFadeOutDuration: 0.22
+        focusFadeOutDuration: 0.22,
+        leadSwitchTailLevel: 0.28,
+        leadSwitchTailFadeDuration: 1.0
     )
 }
 
@@ -30,6 +34,7 @@ final class TowerAudioMixController {
     private var guideBlendTarget: Float = 0.0
     private var guideBlendCurrent: Float = 0.0
     private var focusAmount: Float = 0.0
+    private var lastLeadRowIndex: Int? = nil
 
     private let settings: TowerAudioMixSettings
 
@@ -87,6 +92,7 @@ final class TowerAudioMixController {
         focusAmount = 0.0
         guideBlendTarget = 0.0
         guideBlendCurrent = 0.0
+        lastLeadRowIndex = nil
         audio.setBackgroundVolume(settings.backgroundVolumeNormal)
         for i in towerAudioIDs.indices {
             towerFadeMultipliers[i] = 0.0
@@ -117,6 +123,7 @@ final class TowerAudioMixController {
         audio.setBackgroundVolume(backgroundVolume)
 
         let leadRowIndex = activeLeadRowIndex(isFocusActive: isFocusActive)
+        handleLeadRowTransition(to: leadRowIndex)
 
         for (rowIndex, id) in towerAudioIDs.enumerated() {
             let isNearest = (rowIndex == leadRowIndex)
@@ -154,5 +161,20 @@ final class TowerAudioMixController {
                 towerFadeOutSpeeds[i] = 0.0
             }
         }
+    }
+
+    private func handleLeadRowTransition(to newLeadRowIndex: Int?) {
+        guard newLeadRowIndex != lastLeadRowIndex else { return }
+        defer { lastLeadRowIndex = newLeadRowIndex }
+
+        guard let previousLead = lastLeadRowIndex,
+              previousLead >= 0,
+              previousLead < towerFadeMultipliers.count else {
+            return
+        }
+
+        let targetMultiplier = max(towerFadeMultipliers[previousLead], settings.leadSwitchTailLevel)
+        towerFadeMultipliers[previousLead] = targetMultiplier
+        towerFadeOutSpeeds[previousLead] = targetMultiplier / max(settings.leadSwitchTailFadeDuration, 0.001)
     }
 }

@@ -18,28 +18,6 @@ extension GameARView {
         )
     }
 
-    struct AudioGuidanceConfig {
-        let rearTowerAudibleDistance: Float
-        let horizontalExaggeration: Float
-        let assistTriggerDistance: Float
-        let assistFullBlendDistance: Float
-        let assistLateralOffset: Float
-        let assistForwardOffset: Float
-        let focusLateralOffset: Float
-        let focusHeightOffset: Float
-
-        static let `default` = AudioGuidanceConfig(
-            rearTowerAudibleDistance: 6.0,
-            horizontalExaggeration: 2.0,
-            assistTriggerDistance: 16.0,
-            assistFullBlendDistance: 7.0,
-            assistLateralOffset: 3.2,
-            assistForwardOffset: 1.4,
-            focusLateralOffset: 7.4,
-            focusHeightOffset: 0.2
-        )
-    }
-
     struct ReleaseConfig {
         let upwardVelocityCap: Float
         let swingGroundSafetyMargin: Float

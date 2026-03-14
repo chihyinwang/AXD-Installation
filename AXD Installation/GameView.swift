@@ -36,7 +36,7 @@ final class GameARView: ARView {
 
     // Core world / physics
     private let worldPhysicsConfig: WorldPhysicsConfig = .default
-    private let audioGuidanceConfig: AudioGuidanceConfig = .default
+    private let rearTowerAudibleDistance: Float = 6.0
     private let releaseConfig: ReleaseConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
     private let launchSequenceConfig: LaunchSequenceConfig = .default
@@ -439,9 +439,9 @@ final class GameARView: ARView {
         // Listener always follows the player
         audio.setListenerPosition(playerPos)
         updateReleaseCueIndicator()
-        let guidance = towerAudioEnabled ? audioGuidance(for: playerPos) : nil
+        let guidance = towerAudioEnabled ? audioGuidance() : nil
         updateTowerAudioSourcePositions()
-        updateGuideAudioSource(playerPosition: playerPos, guidance: guidance)
+        updateGuideAudioSource(guidance: guidance)
         let nearestRow = towerAudioEnabled ? audibleTowerRowIndex(to: playerPos) : nil
         audioMixController.setNearestAudibleRowIndex(
             selectedAudibleRowIndex(nearestRowIndex: nearestRow, guidance: guidance)
@@ -449,25 +449,16 @@ final class GameARView: ARView {
         audioMixController.updateMix(isFocusActive: focusActive, deltaTime: realDeltaTime)
     }
 
-    private func audioGuidance(for playerPosition: SIMD3<Float>) -> AudioGuidance? {
+    private func audioGuidance() -> AudioGuidance? {
         guard let targetRowIndex = guidedTargetRowIndex,
-              let targetNode = towerTrack.node(at: targetRowIndex) else {
+              towerTrack.node(at: targetRowIndex) != nil else {
             return nil
         }
 
         if focusActive {
             return AudioGuidance(targetRowIndex: targetRowIndex, blend: 1.0)
         }
-
-        let towerPosition = targetNode.tower.position(relativeTo: nil)
-        let distanceToTarget = simd_distance(playerPosition, towerPosition)
-        let denom = max(audioGuidanceConfig.assistTriggerDistance - audioGuidanceConfig.assistFullBlendDistance, 0.001)
-        let rawBlend = (audioGuidanceConfig.assistTriggerDistance - distanceToTarget) / denom
-        let blend = max(0.0, min(rawBlend, 1.0))
-        if blend <= 0.0 {
-            return nil
-        }
-        return AudioGuidance(targetRowIndex: targetRowIndex, blend: blend)
+        return nil
     }
 
     private func selectedAudibleRowIndex(nearestRowIndex: Int?, guidance: AudioGuidance?) -> Int? {
@@ -482,12 +473,11 @@ final class GameARView: ARView {
             guard let sourceID = audioMixController.sourceID(forRowIndex: rowIndex) else { continue }
 
             let towerPosition = node.tower.position(relativeTo: nil)
-            let realPosition = exaggeratedAudioPosition(from: towerPosition)
-            audio.setSourcePosition(sourceID: sourceID, position: realPosition)
+            audio.setSourcePosition(sourceID: sourceID, position: towerPosition)
         }
     }
 
-    private func updateGuideAudioSource(playerPosition: SIMD3<Float>, guidance: AudioGuidance?) {
+    private func updateGuideAudioSource(guidance: AudioGuidance?) {
         guard let guidance,
               let targetNode = towerTrack.node(at: guidance.targetRowIndex) else {
             audioMixController.setGuideBlend(0.0)
@@ -495,42 +485,8 @@ final class GameARView: ARView {
         }
 
         let towerPosition = targetNode.tower.position(relativeTo: nil)
-        let guidePosition = assistedAudioPosition(
-            for: targetNode.side,
-            playerPosition: playerPosition,
-            towerPosition: towerPosition,
-            isFocusGuidance: focusActive
-        )
-        audioMixController.setGuideSourcePosition(guidePosition)
+        audioMixController.setGuideSourcePosition(towerPosition)
         audioMixController.setGuideBlend(guidance.blend)
-    }
-
-    private func exaggeratedAudioPosition(from worldPosition: SIMD3<Float>) -> SIMD3<Float> {
-        let x = worldPhysicsConfig.centerX + (worldPosition.x - worldPhysicsConfig.centerX) * audioGuidanceConfig.horizontalExaggeration
-        return SIMD3<Float>(x, worldPosition.y, worldPosition.z)
-    }
-
-    private func assistedAudioPosition(
-        for side: TowerSide,
-        playerPosition: SIMD3<Float>,
-        towerPosition: SIMD3<Float>,
-        isFocusGuidance: Bool
-    ) -> SIMD3<Float> {
-        let sideSign: Float = (side == .left) ? -1.0 : 1.0
-        if isFocusGuidance {
-        // Focus guide: emphasize left/right, but keep real tower depth so passing-by sensation remains.
-        return SIMD3<Float>(
-            playerPosition.x + sideSign * audioGuidanceConfig.focusLateralOffset,
-            playerPosition.y + audioGuidanceConfig.focusHeightOffset,
-            towerPosition.z
-        )
-        }
-
-        return SIMD3<Float>(
-            playerPosition.x + sideSign * audioGuidanceConfig.assistLateralOffset,
-            towerPosition.y,
-            playerPosition.z - audioGuidanceConfig.assistForwardOffset
-        )
     }
 
     private func audibleTowerRowIndex(to position: SIMD3<Float>) -> Int? {
@@ -544,7 +500,7 @@ final class GameARView: ARView {
             let zDelta = towerPosition.z - position.z
 
             // Keep towers audible if they are in front, or only slightly behind the player.
-            if zDelta > audioGuidanceConfig.rearTowerAudibleDistance {
+            if zDelta > rearTowerAudibleDistance {
                 continue
             }
 
@@ -889,7 +845,7 @@ final class GameARView: ARView {
         swing = nil
         webRenderer.hideWeb()
         gameStateMachine.transition(to: .falling)
-        audioMixController.fadeOutTowerRow(passedRow, duration: 0.5)
+        audioMixController.fadeOutTowerRow(passedRow, duration: 1.0)
 
         if successful {
             scheduleFocusForNextTower(afterRowIndex: passedRow)
