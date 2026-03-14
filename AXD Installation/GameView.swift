@@ -104,6 +104,26 @@ final class GameARView: ARView {
         let material = SimpleMaterial(color: .lightGray, isMetallic: false)
         return ModelEntity(mesh: mesh, materials: [material])
     }()
+    private let leftLaunchPegSupport: ModelEntity = {
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.045)
+        let material = SimpleMaterial(color: .darkGray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let rightLaunchPegSupport: ModelEntity = {
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.045)
+        let material = SimpleMaterial(color: .darkGray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let leftLaunchPegBase: ModelEntity = {
+        let mesh = MeshResource.generateBox(size: [0.28, 0.14, 0.28])
+        let material = SimpleMaterial(color: .gray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let rightLaunchPegBase: ModelEntity = {
+        let mesh = MeshResource.generateBox(size: [0.28, 0.14, 0.28])
+        let material = SimpleMaterial(color: .gray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
 
     private lazy var towerPrototype: ModelEntity = {
         let m = ModelEntity(
@@ -925,6 +945,7 @@ final class GameARView: ARView {
     }
 
     private func setupLaunchPlatform() {
+        let groundTopY = worldPhysicsConfig.groundY
         startTowerEntity.position = [
             worldPhysicsConfig.centerX,
             worldPhysicsConfig.groundY + launchSequenceConfig.startTowerHeight * 0.5,
@@ -937,12 +958,29 @@ final class GameARView: ARView {
         ]
         world.addChild(startTowerEntity)
 
-        leftLaunchPegEntity.position = launchPegPosition(for: .left)
-        rightLaunchPegEntity.position = launchPegPosition(for: .right)
+        let leftPegPosition = launchPegPosition(for: .left)
+        let rightPegPosition = launchPegPosition(for: .right)
+        leftLaunchPegEntity.position = leftPegPosition
+        rightLaunchPegEntity.position = rightPegPosition
         leftLaunchPegEntity.scale = [1.0, 1.0, 1.0]
         rightLaunchPegEntity.scale = [1.0, 1.0, 1.0]
         world.addChild(leftLaunchPegEntity)
         world.addChild(rightLaunchPegEntity)
+
+        let supportHeightLeft = max(leftPegPosition.y - groundTopY, 0.2)
+        leftLaunchPegSupport.scale = [1.0, supportHeightLeft, 1.0]
+        leftLaunchPegSupport.position = [leftPegPosition.x, groundTopY + supportHeightLeft * 0.5, leftPegPosition.z]
+        world.addChild(leftLaunchPegSupport)
+
+        let supportHeightRight = max(rightPegPosition.y - groundTopY, 0.2)
+        rightLaunchPegSupport.scale = [1.0, supportHeightRight, 1.0]
+        rightLaunchPegSupport.position = [rightPegPosition.x, groundTopY + supportHeightRight * 0.5, rightPegPosition.z]
+        world.addChild(rightLaunchPegSupport)
+
+        leftLaunchPegBase.position = [leftPegPosition.x, groundTopY + 0.07, leftPegPosition.z]
+        rightLaunchPegBase.position = [rightPegPosition.x, groundTopY + 0.07, rightPegPosition.z]
+        world.addChild(leftLaunchPegBase)
+        world.addChild(rightLaunchPegBase)
     }
 
     private func updateLaunchPrepWebs() {
