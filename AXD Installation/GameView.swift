@@ -39,6 +39,10 @@ final class GameARView: ARView {
     private let audioGuidanceConfig: AudioGuidanceConfig = .default
     private let releaseConfig: ReleaseConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
+    private let launchSequenceConfig: LaunchSequenceConfig = .default
+    private let failedWebShotForwardDistance: Float = 7.0
+    private let failedWebShotLateralDistance: Float = 2.6
+    private let failedWebShotVerticalOffset: Float = 0.6
 
     // Swing behavior
     private let swingPhysicsConfig: SwingPhysicsConfig
@@ -85,6 +89,21 @@ final class GameARView: ARView {
         indicator.scale = .zero
         return indicator
     }()
+    private let startTowerEntity: ModelEntity = {
+        let mesh = MeshResource.generateBox(size: [0.55, 4.0, 0.55])
+        let material = SimpleMaterial(color: .systemGray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let leftLaunchPegEntity: ModelEntity = {
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.08)
+        let material = SimpleMaterial(color: .lightGray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
+    private let rightLaunchPegEntity: ModelEntity = {
+        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.08)
+        let material = SimpleMaterial(color: .lightGray, isMetallic: false)
+        return ModelEntity(mesh: mesh, materials: [material])
+    }()
 
     private lazy var towerPrototype: ModelEntity = {
         let m = ModelEntity(
@@ -105,6 +124,17 @@ final class GameARView: ARView {
     private var playerVel: SIMD3<Float> = .zero
 
     private var swing: SwingState? = nil
+    private var launchPrepLeftConnected: Bool = false
+    private var launchPrepRightConnected: Bool = false
+    private var launchPrepCharging: Bool = false
+    private var launchPrepChargeElapsed: Float = 0.0
+    private var launchPrepReleaseLeftArmed: Bool = false
+    private var launchPrepReleaseRightArmed: Bool = false
+    private var pendingChordReleaseSide: TowerSide? = nil
+    private var pendingChordReleaseElapsed: Float = 0.0
+    private var launchPrepTransition: Float = 0.0
+    private var pendingFocusFromLaunchArc: Bool = false
+    private var towerAudioEnabled: Bool = false
 
     // MARK: Init
 
@@ -178,16 +208,18 @@ final class GameARView: ARView {
         world.addChild(ground)
         addStreetReferenceProps()
 
-        // Player starts on the rooftop
-        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
+        // Player starts on the launch tower.
+        playerPos = startPlayerPosition()
         player.position = playerPos
         playerVel = .zero
         gameStateMachine.transition(to: .rooftop)
         world.addChild(player)
         world.addChild(releaseCueIndicator)
+        setupLaunchPlatform()
 
         // Generate rows of towers
         towerTrack.rebuild(in: world, prototype: towerPrototype)
+        setTowerVisibility(false)
 
         // Spatial audio: one looping source per tower, listener follows player
         audio.configure(loopFileName: "beep", fileExt: "wav")
@@ -252,9 +284,10 @@ final class GameARView: ARView {
     }
 
     private func updatePlayerState(dt: Float) {
+        updateLaunchPrepTransition(dt: dt)
         switch gameStateMachine.state {
         case .rooftop:
-            handleRooftopState()
+            handleRooftopState(dt: dt)
         case .swinging:
             handleSwingingState(dt: dt)
         case .falling:
@@ -264,10 +297,26 @@ final class GameARView: ARView {
         }
     }
 
-    private func handleRooftopState() {
-        // Standing still until the first Q/E attaches a web
-        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
+    private func handleRooftopState(dt: Float) {
+        // Standing on launch tower while preparing the first launch.
+        let base = startPlayerPosition()
+        playerPos = base
         playerVel = .zero
+
+        if launchPrepCharging {
+            launchPrepChargeElapsed += dt
+        }
+        let blend = launchChargeBlendFactor()
+        playerPos.z += launchSequenceConfig.chargePlayerBackOffset * blend
+
+        if let pendingSide = pendingChordReleaseSide {
+            pendingChordReleaseElapsed += dt
+            if pendingChordReleaseElapsed > launchSequenceConfig.releaseChordWindow {
+                pendingChordReleaseSide = nil
+                pendingChordReleaseElapsed = 0.0
+                breakLaunchPrepConnection(for: pendingSide)
+            }
+        }
     }
 
     private func handleSwingingState(dt: Float) {
@@ -337,6 +386,16 @@ final class GameARView: ARView {
         playerPos += playerVel * dt
         playerPos.x = worldPhysicsConfig.centerX
 
+        if pendingFocusFromLaunchArc,
+           playerVel.y <= 0,
+           playerPos.y <= launchSequenceConfig.focusTriggerHeight {
+            pendingFocusFromLaunchArc = false
+            if gameStateMachine.isGrounded {
+                gameStateMachine.transition(to: .falling)
+            }
+            scheduleFocusForNextTower(afterRowIndex: -1, activateImmediately: true)
+        }
+
         if playerPos.y <= worldPhysicsConfig.groundY {
             playerPos.y = worldPhysicsConfig.groundY
             playerVel = .zero
@@ -353,15 +412,17 @@ final class GameARView: ARView {
     private func applyFrameOutputs(realDeltaTime: Float) {
         // Apply transform to the entity
         player.position = playerPos
-        updateCameraFollow()
+        updateCameraFollow(deltaTime: realDeltaTime)
+        webRenderer.tick(deltaTime: realDeltaTime)
+        updateLaunchPrepWebs()
 
         // Listener always follows the player
         audio.setListenerPosition(playerPos)
         updateReleaseCueIndicator()
-        let guidance = audioGuidance(for: playerPos)
+        let guidance = towerAudioEnabled ? audioGuidance(for: playerPos) : nil
         updateTowerAudioSourcePositions()
         updateGuideAudioSource(playerPosition: playerPos, guidance: guidance)
-        let nearestRow = audibleTowerRowIndex(to: playerPos)
+        let nearestRow = towerAudioEnabled ? audibleTowerRowIndex(to: playerPos) : nil
         audioMixController.setNearestAudibleRowIndex(
             selectedAudibleRowIndex(nearestRowIndex: nearestRow, guidance: guidance)
         )
@@ -498,8 +559,13 @@ final class GameARView: ARView {
 
         // Reset core gameplay state
         swing = nil
+        resetLaunchPrepState()
+        pendingFocusFromLaunchArc = false
+        towerAudioEnabled = false
+        launchPrepTransition = 0.0
+        setTowerVisibility(false)
         gameStateMachine.transition(to: .rooftop)
-        playerPos = [worldPhysicsConfig.centerX, worldPhysicsConfig.rooftopY, worldPhysicsConfig.rooftopStartZ]
+        playerPos = startPlayerPosition()
         playerVel = .zero
 
         // Reset progression / focus / guidance
@@ -510,6 +576,7 @@ final class GameARView: ARView {
 
         // Reset presentation systems
         webRenderer.hideWeb()
+        webRenderer.hideAllPrepWebs()
         audioMixController.clearFocusTarget()
         audioMixController.resetToNormalMix()
         audio.restartAllLoopsFromBeginning()
@@ -522,14 +589,14 @@ final class GameARView: ARView {
 
     private func attemptShoot(_ side: TowerSide) {
         // 1) Block shooting while grounded (prevents underground swinging)
-        if gameStateMachine.isGrounded {
+        if gameStateMachine.isGrounded && !focusActive {
             print("[shoot] blocked (grounded/dead)")
             return
         }
 
-        // 2) First shot is allowed from rooftop
+        // 2) Launch prep on rooftop
         if gameStateMachine.isRooftop {
-            shootWeb(to: side)
+            handleLaunchPrepShoot(side)
             return
         }
 
@@ -542,11 +609,12 @@ final class GameARView: ARView {
         // Optional: enforce the expected alternating side rhythm
         if let expected = expectedNextSide, expected != side {
             print("[shoot] wrong side. expected \(expected), got \(side)")
+            fireFailedWebShot(to: side)
             return
         }
 
         // Consume focus immediately on a successful shot (return to normal time)
-        shootWeb(to: side)
+        shootWeb(to: side, preferredRowIndex: guidedTargetRowIndex)
         focusStateMachine.reset()
         expectedNextSide = nil
         guidedTargetRowIndex = nil
@@ -555,6 +623,11 @@ final class GameARView: ARView {
     }
 
     private func attemptRelease(_ side: TowerSide) {
+        if gameStateMachine.isRooftop {
+            handleLaunchPrepRelease(side)
+            return
+        }
+
         guard let swing else { return }
         guard gameStateMachine.state == .swinging else { return }
         guard swing.side == side else {
@@ -573,15 +646,136 @@ final class GameARView: ARView {
         releaseWeb(successful: successful, swingState: swing)
     }
 
-    private func shootWeb(to side: TowerSide) {
+    private func handleLaunchPrepShoot(_ side: TowerSide) {
+        guard !launchPrepCharging else { return }
+        switch side {
+        case .left:
+            launchPrepLeftConnected = true
+        case .right:
+            launchPrepRightConnected = true
+        }
+        armLaunchChargeIfReady()
+    }
+
+    private func handleLaunchPrepRelease(_ side: TowerSide) {
+        guard gameStateMachine.isRooftop else { return }
+
+        if launchPrepCharging {
+            let chargeReady = launchPrepChargeElapsed >= launchSequenceConfig.chargeMinDuration
+            if !chargeReady {
+                breakLaunchPrepConnection(for: side)
+                return
+            }
+
+            if let pendingSide = pendingChordReleaseSide {
+                if pendingSide != side && pendingChordReleaseElapsed <= launchSequenceConfig.releaseChordWindow {
+                    launchPrepReleaseLeftArmed = true
+                    launchPrepReleaseRightArmed = true
+                    pendingChordReleaseSide = nil
+                    pendingChordReleaseElapsed = 0.0
+                    launchFromPrepIfReady()
+                    return
+                }
+                return
+            }
+
+            pendingChordReleaseSide = side
+            pendingChordReleaseElapsed = 0.0
+            return
+        }
+
+        // Not charging yet: pressing release breaks whichever line is currently attached.
+        breakLaunchPrepConnection(for: side)
+    }
+
+    private func armLaunchChargeIfReady() {
+        guard launchPrepLeftConnected, launchPrepRightConnected else { return }
+        launchPrepCharging = true
+        launchPrepChargeElapsed = 0.0
+        launchPrepReleaseLeftArmed = false
+        launchPrepReleaseRightArmed = false
+        print("[launch] charge started")
+    }
+
+    private func breakLaunchPrepConnection(for side: TowerSide) {
+        switch side {
+        case .left:
+            launchPrepLeftConnected = false
+            launchPrepReleaseLeftArmed = false
+        case .right:
+            launchPrepRightConnected = false
+            launchPrepReleaseRightArmed = false
+        }
+        launchPrepCharging = false
+        launchPrepChargeElapsed = 0.0
+        pendingChordReleaseSide = nil
+        pendingChordReleaseElapsed = 0.0
+        webRenderer.hidePrepWeb(side: side)
+        print("[launch] \(side) preload web released")
+    }
+
+    private func launchFromPrepIfReady() {
+        guard launchPrepLeftConnected, launchPrepRightConnected else { return }
+        guard launchPrepReleaseLeftArmed, launchPrepReleaseRightArmed else { return }
+
+        let speed = launchSequenceConfig.launchSpeed
+        let angle = launchSequenceConfig.launchAngleDegrees * (.pi / 180.0)
+        playerVel = SIMD3<Float>(
+            0,
+            sin(angle) * speed,
+            -cos(angle) * speed
+        )
+
+        resetLaunchPrepState()
+        webRenderer.hideAllPrepWebs()
+        towerAudioEnabled = true
+        setTowerVisibility(true)
+        pendingFocusFromLaunchArc = true
+        gameStateMachine.transition(to: .falling)
+        print("[launch] released with speed=\(speed)")
+    }
+
+    private func resetLaunchPrepState() {
+        launchPrepLeftConnected = false
+        launchPrepRightConnected = false
+        launchPrepCharging = false
+        launchPrepChargeElapsed = 0.0
+        launchPrepReleaseLeftArmed = false
+        launchPrepReleaseRightArmed = false
+        pendingChordReleaseSide = nil
+        pendingChordReleaseElapsed = 0.0
+    }
+
+    private func scheduleFocusForNextTower(afterRowIndex rowIndex: Int, activateImmediately: Bool = false) {
+        if activateImmediately {
+            focusStateMachine.activateNow()
+        } else {
+            focusStateMachine.scheduleAfterDelay()
+        }
+        let nextIndex = rowIndex + 1
+        if let nextSide = towerTrack.side(at: nextIndex) {
+            expectedNextSide = nextSide
+            guidedTargetRowIndex = nextIndex
+            audioMixController.setFocusTargetRowIndex(nextIndex)
+            print("[focus] will start after delay. next side should be \(nextSide)")
+        } else {
+            expectedNextSide = nil
+            guidedTargetRowIndex = nil
+            audioMixController.clearFocusTarget()
+            print("[focus] will start after delay (no next tower)")
+        }
+    }
+
+    private func shootWeb(to side: TowerSide, preferredRowIndex: Int? = nil) {
         // Target the next row
-        let nextIndex = towerTrack.nextIndex(fromSwingRow: swing?.rowIndex)
+        let nextIndex = preferredRowIndex ?? towerTrack.nextIndex(fromSwingRow: swing?.rowIndex)
         guard let node = towerTrack.node(at: nextIndex) else {
             print("[web] no next tower")
             return
         }
         guard node.side == side else {
             print("[web] wrong side. next is \(node.side), you pressed \(side)")
+            fireFailedWebShot(to: side)
             return
         }
 
@@ -628,8 +822,9 @@ final class GameARView: ARView {
         let rN = radial / rLen
         let tangent = SIMD2<Float>(-rN.y, rN.x)
 
-        playerVel.y += tangent.x * swingPhysicsConfig.initialSwingSpeed
-        playerVel.z += tangent.y * swingPhysicsConfig.initialSwingSpeed
+        // Normalize swing entry speed so first swing (after launch) matches later swings.
+        playerVel.y = tangent.x * swingPhysicsConfig.initialSwingSpeed
+        playerVel.z = tangent.y * swingPhysicsConfig.initialSwingSpeed
 
         print("[web] attach row=\(nextIndex) side=\(side) anchor=\(anchor)")
     }
@@ -677,19 +872,7 @@ final class GameARView: ARView {
         audioMixController.fadeOutTowerRow(passedRow, duration: 0.5)
 
         if successful {
-            focusStateMachine.scheduleAfterDelay()
-            let nextIndex = passedRow + 1
-            if let nextSide = towerTrack.side(at: nextIndex) {
-                expectedNextSide = nextSide
-                guidedTargetRowIndex = nextIndex
-                audioMixController.setFocusTargetRowIndex(nextIndex)
-                print("[focus] will start after delay. next side should be \(expectedNextSide!)")
-            } else {
-                expectedNextSide = nil
-                guidedTargetRowIndex = nil
-                audioMixController.clearFocusTarget()
-                print("[focus] will start after delay (no next tower)")
-            }
+            scheduleFocusForNextTower(afterRowIndex: passedRow)
             return
         }
 
@@ -699,9 +882,98 @@ final class GameARView: ARView {
         audioMixController.clearFocusTarget()
     }
 
+    private func fireFailedWebShot(to side: TowerSide) {
+        let sideSign: Float = (side == .left) ? -1.0 : 1.0
+        let start = playerPos + SIMD3<Float>(0, 0.2, 0)
+        let end = start + SIMD3<Float>(
+            sideSign * failedWebShotLateralDistance,
+            failedWebShotVerticalOffset,
+            -failedWebShotForwardDistance
+        )
+        webRenderer.triggerFailedShot(from: start, to: end)
+    }
+
+    private func launchChargeBlendFactor() -> Float {
+        let t = min(max(launchPrepTransition, 0.0), 1.0)
+        return t * t * (3.0 - 2.0 * t)
+    }
+
+    private func updateLaunchPrepTransition(dt: Float) {
+        guard dt > 0 else { return }
+        let target: Float = launchPrepCharging ? 1.0 : 0.0
+        let speed = dt / max(launchSequenceConfig.chargeMinDuration, 0.001)
+        if launchPrepTransition < target {
+            launchPrepTransition = min(launchPrepTransition + speed, target)
+        } else {
+            launchPrepTransition = max(launchPrepTransition - speed, target)
+        }
+    }
+
+    private func startPlayerPosition() -> SIMD3<Float> {
+        let towerTopY = worldPhysicsConfig.groundY + launchSequenceConfig.startTowerHeight
+        return SIMD3<Float>(worldPhysicsConfig.centerX, towerTopY + 0.12, worldPhysicsConfig.rooftopStartZ)
+    }
+
+    private func launchPegPosition(for side: TowerSide) -> SIMD3<Float> {
+        let sideSign: Float = (side == .left) ? -1.0 : 1.0
+        let base = startPlayerPosition()
+        return SIMD3<Float>(
+            base.x + sideSign * launchSequenceConfig.pegLateralOffset,
+            base.y + launchSequenceConfig.pegHeightOffset,
+            base.z - launchSequenceConfig.pegForwardOffset
+        )
+    }
+
+    private func setupLaunchPlatform() {
+        startTowerEntity.position = [
+            worldPhysicsConfig.centerX,
+            worldPhysicsConfig.groundY + launchSequenceConfig.startTowerHeight * 0.5,
+            worldPhysicsConfig.rooftopStartZ
+        ]
+        startTowerEntity.scale = [
+            1.0,
+            launchSequenceConfig.startTowerHeight / 4.0,
+            1.0
+        ]
+        world.addChild(startTowerEntity)
+
+        leftLaunchPegEntity.position = launchPegPosition(for: .left)
+        rightLaunchPegEntity.position = launchPegPosition(for: .right)
+        leftLaunchPegEntity.scale = [1.0, 1.0, 1.0]
+        rightLaunchPegEntity.scale = [1.0, 1.0, 1.0]
+        world.addChild(leftLaunchPegEntity)
+        world.addChild(rightLaunchPegEntity)
+    }
+
+    private func updateLaunchPrepWebs() {
+        guard gameStateMachine.isRooftop else {
+            webRenderer.hideAllPrepWebs()
+            return
+        }
+
+        let webStart = playerPos
+        if launchPrepLeftConnected {
+            webRenderer.updatePrepWeb(side: .left, from: webStart, to: leftLaunchPegEntity.position(relativeTo: nil))
+        } else {
+            webRenderer.hidePrepWeb(side: .left)
+        }
+
+        if launchPrepRightConnected {
+            webRenderer.updatePrepWeb(side: .right, from: webStart, to: rightLaunchPegEntity.position(relativeTo: nil))
+        } else {
+            webRenderer.hidePrepWeb(side: .right)
+        }
+    }
+
+    private func setTowerVisibility(_ isVisible: Bool) {
+        for node in towerTrack.nodes {
+            node.tower.isEnabled = isVisible
+        }
+    }
+
     // MARK: Camera
 
-    private func updateCameraFollow() {
+    private func updateCameraFollow(deltaTime _: Float) {
         // Offset behind & above player (forward is -Z, so "behind" is +Z).
         // At high altitude, pull camera farther back and aim lower to keep ground references visible.
         let highAltitude = min(
@@ -716,9 +988,11 @@ final class GameARView: ARView {
             cameraFollowConfig.baseHeight + extraHeight,
             cameraFollowConfig.baseBackDistance + extraBack
         ]
+        let launchChargeBlend = launchChargeBlendFactor()
+        let launchChargeOffset = SIMD3<Float>(0, 0, launchSequenceConfig.chargeCameraBackOffset * launchChargeBlend)
 
         let target = playerPos + SIMD3<Float>(0, -lookDownBias, 0)
-        let camPos = target + offset
+        let camPos = target + offset + launchChargeOffset
 
         cameraAnchor.position = camPos
         cameraAnchor.look(at: target, from: camPos, relativeTo: nil)
@@ -741,7 +1015,9 @@ final class GameARView: ARView {
     private func makeGroundEntity() -> ModelEntity {
         // Ground size: wide enough for lanes; deep enough to cover the farthest tower row
         let width: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
-        let depth: Float = Float(towerLayoutConfig.rowCount + 3) * towerLayoutConfig.rowSpacing + 8
+        let farthestTowerDistance = towerLayoutConfig.firstRowDistance
+            + Float(max(towerLayoutConfig.rowCount - 1, 0)) * towerLayoutConfig.rowSpacing
+        let depth: Float = farthestTowerDistance + 20
 
         let mesh = MeshResource.generateBox(size: [width, groundThickness, depth])
         let mat = SimpleMaterial(color: .darkGray, isMetallic: false)
@@ -754,7 +1030,9 @@ final class GameARView: ARView {
 
     private func addStreetReferenceProps() {
         let roadWidth: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
-        let roadDepth: Float = Float(towerLayoutConfig.rowCount + 3) * towerLayoutConfig.rowSpacing + 8
+        let farthestTowerDistance = towerLayoutConfig.firstRowDistance
+            + Float(max(towerLayoutConfig.rowCount - 1, 0)) * towerLayoutConfig.rowSpacing
+        let roadDepth: Float = farthestTowerDistance + 20
         let lineY: Float = 0.01
 
         let edgeLineMat = SimpleMaterial(color: .white, isMetallic: false)
@@ -807,4 +1085,3 @@ final class GameARView: ARView {
     }
 
 }
-

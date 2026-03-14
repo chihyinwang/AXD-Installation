@@ -22,6 +22,11 @@ final class FocusStateMachine {
         remaining = 0
     }
 
+    func activateNow() {
+        delayRemaining = 0
+        remaining = timing.duration
+    }
+
     func reset() {
         remaining = 0
         delayRemaining = 0
@@ -55,4 +60,3 @@ final class FocusStateMachine {
         return FocusTickResult(didStart: didStart, didEnd: didEnd)
     }
 }
-

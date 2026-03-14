@@ -13,10 +13,9 @@ struct SwingPhysicsConfig {
         detachAfterPassing: 3.0,
         initialSwingSpeed: 7.0,
         webAttachExtraHeight: 1.8,
-        ropeScale: 0.55,
+        ropeScale: 0.52,
         ropeMinYZ: 3.5,
         ropeMaxHard: 8.0,
-        minClearanceY: 1.8
+        minClearanceY: 2.0
     )
 }
-

@@ -78,6 +78,34 @@ extension GameARView {
         )
     }
 
+    struct LaunchSequenceConfig {
+        let startTowerHeight: Float
+        let pegForwardOffset: Float
+        let pegLateralOffset: Float
+        let pegHeightOffset: Float
+        let chargeMinDuration: Float
+        let releaseChordWindow: Float
+        let chargeCameraBackOffset: Float
+        let chargePlayerBackOffset: Float
+        let launchSpeed: Float
+        let launchAngleDegrees: Float
+        let focusTriggerHeight: Float
+
+        static let `default` = LaunchSequenceConfig(
+            startTowerHeight: 6.2,
+            pegForwardOffset: 2.9,
+            pegLateralOffset: 1.35,
+            pegHeightOffset: 0.18,
+            chargeMinDuration: 0.55,
+            releaseChordWindow: 0.09,
+            chargeCameraBackOffset: 0.7,
+            chargePlayerBackOffset: 0.25,
+            launchSpeed: 16.0,
+            launchAngleDegrees: 15.0,
+            focusTriggerHeight: 6.0
+        )
+    }
+
     struct SwingState {
         let anchor: SIMD3<Float>
         var ropeLengthYZ: Float
