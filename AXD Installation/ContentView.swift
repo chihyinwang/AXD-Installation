@@ -11,29 +11,25 @@ struct ContentView: View {
     @StateObject private var poseReceiver = UDPPoseReceiver(port: 7777)
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             GameView()
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("iPhone Pose Receiver")
-                    .font(.headline)
-                Text(poseReceiver.isListening ? "listening: 7777" : "not listening")
-                Text("device: \(poseReceiver.lastDeviceID)")
-                Text(String(format: "x: %.3f", poseReceiver.x))
-                Text(String(format: "y: %.3f", poseReceiver.y))
-                Text(String(format: "z: %.3f", poseReceiver.z))
-                Text(String(format: "raiseAngle: %.1f°", poseReceiver.raiseAngleDegrees))
-                Text("isHandRaised: \(poseReceiver.isHandRaised ? "true" : "false")")
-//                Text("packets: \(poseReceiver.packetCount)")
-//                Text("listener state: \(poseReceiver.listenerStateDescription)")
-//                Text("listener error: \(poseReceiver.listenerErrorDescription)")
+            HStack(alignment: .top, spacing: 12) {
+                posePanel(
+                    title: "Left Hand (armModeCode=0)",
+                    packet: poseReceiver.leftPacket,
+                    fallbackModeCode: 0
+                )
+
+                Spacer(minLength: 0)
+
+                posePanel(
+                    title: "Right Hand (armModeCode=1)",
+                    packet: poseReceiver.rightPacket,
+                    fallbackModeCode: 1
+                )
             }
-            .font(.system(.body, design: .monospaced))
-            .padding(12)
-            .background(.black.opacity(0.7))
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
             .padding()
         }
         .onAppear {
@@ -42,6 +38,34 @@ struct ContentView: View {
         .onDisappear {
             poseReceiver.stop()
         }
+    }
+
+    @ViewBuilder
+    private func posePanel(title: String, packet: PosePacket?, fallbackModeCode: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.headline)
+            Text(poseReceiver.isListening ? "listening: 7777" : "not listening")
+
+            if let packet {
+                Text("timestamp: \(String(format: "%.3f", packet.timestamp))")
+                Text("armModeCode: \(packet.armModeCode)")
+                Text("armPoseStateCode: \(packet.armPoseStateCode)")
+                Text(String(format: "raiseAngle: %.1f°", packet.raiseAngleDegrees))
+                Text(String(format: "wristOut: %.1f°", packet.wristOutDegrees))
+            } else {
+                Text("timestamp: -")
+                Text("armModeCode: \(fallbackModeCode)")
+                Text("armPoseStateCode: -")
+                Text("raiseAngle: -")
+                Text("wristOut: -")
+            }
+        }
+        .font(.system(.body, design: .monospaced))
+        .padding(12)
+        .background(.black.opacity(0.7))
+        .foregroundStyle(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

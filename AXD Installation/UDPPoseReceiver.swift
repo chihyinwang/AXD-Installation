@@ -7,13 +7,13 @@ final class UDPPoseReceiver: ObservableObject {
     @Published var listenerStateDescription = "idle"
     @Published var listenerErrorDescription = "-"
     @Published var packetCount = 0
-    @Published var lastDeviceID = "-"
     @Published var lastTimestamp: TimeInterval = 0
-    @Published var x: Float = 0
-    @Published var y: Float = 0
-    @Published var z: Float = 0
+    @Published var armModeCode: Int = 0
+    @Published var armPoseStateCode: Int = 0
     @Published var raiseAngleDegrees: Float = 0
-    @Published var isHandRaised: Bool = false
+    @Published var wristOutDegrees: Float = 0
+    @Published var leftPacket: PosePacket?
+    @Published var rightPacket: PosePacket?
 
     private let queue = DispatchQueue(label: "udp.pose.receiver")
     private let decoder = JSONDecoder()
@@ -141,13 +141,17 @@ final class UDPPoseReceiver: ObservableObject {
             let packet = try decoder.decode(PosePacket.self, from: data)
             DispatchQueue.main.async {
                 self.packetCount += 1
-                self.lastDeviceID = packet.deviceID
                 self.lastTimestamp = packet.timestamp
-                self.x = packet.x
-                self.y = packet.y
-                self.z = packet.z
+                self.armModeCode = packet.armModeCode
+                self.armPoseStateCode = packet.armPoseStateCode
                 self.raiseAngleDegrees = packet.raiseAngleDegrees
-                self.isHandRaised = packet.isHandRaised
+                self.wristOutDegrees = packet.wristOutDegrees
+
+                if packet.armModeCode == 0 {
+                    self.leftPacket = packet
+                } else if packet.armModeCode == 1 {
+                    self.rightPacket = packet
+                }
             }
         } catch {
             print("[udp-recv] decode error: \(error)")

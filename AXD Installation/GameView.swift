@@ -199,7 +199,8 @@ final class GameARView: ARView {
         setTowerVisibility(false)
 
         audio.configureGeneratedTowerBaseLoop()
-        _ = audio.configureBackgroundLoop(fileName: "background_music", fileExt: "wav")
+//        _ = audio.configureBackgroundLoop(fileName: "background_music", fileExt: "wav")
+        _ = audio.configureBackgroundLoop(fileName: "background", fileExt: "mp3")
 
         for node in towerTrack.nodes {
             let sourceID = audio.addLoopingSource(at: node.tower.position(relativeTo: nil))
