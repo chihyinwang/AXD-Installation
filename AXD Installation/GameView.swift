@@ -38,123 +38,51 @@ final class GameARView: ARView {
         case leadingNextTower(rowIndex: Int)
     }
 
-    // MARK: Configuration (tuning knobs)
+    // MARK: Configuration
 
-    // Core world / physics
     private let worldPhysicsConfig: WorldPhysicsConfig = .default
-    private let rearTowerAudibleDistance: Float = 6.0
+    private let swingPhysicsConfig: SwingPhysicsConfig
+    private let towerLayoutConfig: TowerLayoutConfig
+    private let towerTrack: TowerTrack
+    private let focusStateMachine: FocusStateMachine
     private let releaseConfig: ReleaseConfig = .default
     private let releaseCueAudioConfig: ReleaseCueAudioConfig = .default
-    private let cameraFollowConfig: CameraFollowConfig = .default
     private let launchSequenceConfig: LaunchSequenceConfig = .default
+    private let cameraFollowConfig: CameraFollowConfig = .default
     private let audioGuidanceConfig: AudioGuidanceConfig = .default
     private let debugConfig: DebugConfig = .default
+
+    private let rearTowerAudibleDistance: Float = 6.0
     private let failedWebShotForwardDistance: Float = 7.0
     private let failedWebShotLateralDistance: Float = 2.6
     private let failedWebShotVerticalOffset: Float = 0.6
+    private let groundThickness: Float = 0.05
 
-    // Swing behavior
-    private let swingPhysicsConfig: SwingPhysicsConfig
-
-    // Focus mode timing
-    private let focusStateMachine: FocusStateMachine
     private var focusActive: Bool { focusStateMachine.isActive }
-
-    // Web attach & rope constraints are read from swingPhysicsConfig
-
-    // Tower layout
-    private let towerLayoutConfig: TowerLayoutConfig
-    private let towerTrack: TowerTrack
-    
-    // Optional: record which side the next tower is on (useful for debugging / player feedback)
     private var expectedNextSide: TowerSide? = nil
     private var guidedTargetRowIndex: Int? = nil
-
-    // Ground mesh
-    private let groundThickness: Float = 0.05
 
     // MARK: Scene entities (RealityKit graph)
 
     private var updateSub: Cancellable?
+    private let sceneEntities: GameSceneEntities
 
-    private let world = AnchorEntity(world: .zero)
-
-    private let player = ModelEntity(
-        mesh: .generateSphere(radius: 0.12),
-        materials: [SimpleMaterial(color: .red, isMetallic: false)]
-    )
-
-    private let camera = PerspectiveCamera()
-    private let cameraAnchor = AnchorEntity(world: .zero)
-    private let visibilityMaskSphere: ModelEntity = {
-        let mesh = MeshResource.generateSphere(radius: 1.0)
-        let material = UnlitMaterial(color: .black)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let releaseCueIndicator: ModelEntity = {
-        let mesh = MeshResource.generateSphere(radius: 0.12)
-        let material = UnlitMaterial(color: .yellow)
-        let indicator = ModelEntity(mesh: mesh, materials: [material])
-        indicator.scale = .zero
-        return indicator
-    }()
-    private let guideDebugSphere: ModelEntity = {
-        let mesh = MeshResource.generateSphere(radius: 0.28)
-        let material = UnlitMaterial(color: .red)
-        let sphere = ModelEntity(mesh: mesh, materials: [material])
-        sphere.scale = .zero
-        return sphere
-    }()
-    private let guideTowerDebugSphere: ModelEntity = {
-        let mesh = MeshResource.generateSphere(radius: 0.22)
-        let material = UnlitMaterial(color: .systemBlue)
-        let sphere = ModelEntity(mesh: mesh, materials: [material])
-        sphere.scale = .zero
-        return sphere
-    }()
-    private let startTowerEntity: ModelEntity = {
-        let mesh = MeshResource.generateBox(size: [0.55, 4.0, 0.55])
-        let material = SimpleMaterial(color: .systemGray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let leftLaunchPegEntity: ModelEntity = {
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.08)
-        let material = SimpleMaterial(color: .lightGray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let rightLaunchPegEntity: ModelEntity = {
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.08)
-        let material = SimpleMaterial(color: .lightGray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let leftLaunchPegSupport: ModelEntity = {
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.045)
-        let material = SimpleMaterial(color: .darkGray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let rightLaunchPegSupport: ModelEntity = {
-        let mesh = MeshResource.generateCylinder(height: 1.0, radius: 0.045)
-        let material = SimpleMaterial(color: .darkGray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let leftLaunchPegBase: ModelEntity = {
-        let mesh = MeshResource.generateBox(size: [0.28, 0.14, 0.28])
-        let material = SimpleMaterial(color: .gray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-    private let rightLaunchPegBase: ModelEntity = {
-        let mesh = MeshResource.generateBox(size: [0.28, 0.14, 0.28])
-        let material = SimpleMaterial(color: .gray, isMetallic: false)
-        return ModelEntity(mesh: mesh, materials: [material])
-    }()
-
-    private lazy var towerPrototype: ModelEntity = {
-        let m = ModelEntity(
-            mesh: .generateBox(size: [0.25, towerLayoutConfig.towerHeight, 0.25]),
-            materials: [SimpleMaterial(color: .white, isMetallic: false)]
-        )
-        return m
-    }()
+    private var world: AnchorEntity { sceneEntities.world }
+    private var player: ModelEntity { sceneEntities.player }
+    private var camera: PerspectiveCamera { sceneEntities.camera }
+    private var cameraAnchor: AnchorEntity { sceneEntities.cameraAnchor }
+    private var visibilityMaskSphere: ModelEntity { sceneEntities.visibilityMaskSphere }
+    private var releaseCueIndicator: ModelEntity { sceneEntities.releaseCueIndicator }
+    private var guideDebugSphere: ModelEntity { sceneEntities.guideDebugSphere }
+    private var guideTowerDebugSphere: ModelEntity { sceneEntities.guideTowerDebugSphere }
+    private var startTowerEntity: ModelEntity { sceneEntities.startTowerEntity }
+    private var leftLaunchPegEntity: ModelEntity { sceneEntities.leftLaunchPegEntity }
+    private var rightLaunchPegEntity: ModelEntity { sceneEntities.rightLaunchPegEntity }
+    private var leftLaunchPegSupport: ModelEntity { sceneEntities.leftLaunchPegSupport }
+    private var rightLaunchPegSupport: ModelEntity { sceneEntities.rightLaunchPegSupport }
+    private var leftLaunchPegBase: ModelEntity { sceneEntities.leftLaunchPegBase }
+    private var rightLaunchPegBase: ModelEntity { sceneEntities.rightLaunchPegBase }
+    private let towerPrototype: ModelEntity
 
     private let audio: SpatialAudioRig
     private let audioMixController: TowerAudioMixController
@@ -167,6 +95,11 @@ final class GameARView: ARView {
     private var playerVel: SIMD3<Float> = .zero
 
     private var swing: SwingState? = nil
+    private var launchPrepTransition: Float = 0.0
+    private var isFocusPendingFromLaunchArc: Bool = false
+    private var isTowerAudioEnabled: Bool = false
+    private var releaseWindowAudioPhase: ReleaseCueAudioPhase = .idle
+
     private var launchPrepLeftConnected: Bool = false
     private var launchPrepRightConnected: Bool = false
     private var launchPrepCharging: Bool = false
@@ -175,10 +108,6 @@ final class GameARView: ARView {
     private var launchPrepReleaseRightArmed: Bool = false
     private var pendingChordReleaseSide: TowerSide? = nil
     private var pendingChordReleaseElapsed: Float = 0.0
-    private var launchPrepTransition: Float = 0.0
-    private var isFocusPendingFromLaunchArc: Bool = false
-    private var isTowerAudioEnabled: Bool = false
-    private var releaseWindowAudioPhase: ReleaseCueAudioPhase = .idle
 
     // MARK: Init
 
@@ -192,9 +121,11 @@ final class GameARView: ARView {
         self.towerLayoutConfig = towerLayout
         self.towerTrack = TowerTrack(layout: towerLayout)
         self.focusStateMachine = FocusStateMachine(timing: focusTiming)
+        self.sceneEntities = GameSceneEntities()
+        self.towerPrototype = GameSceneEntities.makeTowerPrototype(towerHeight: towerLayout.towerHeight)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
-        self.webRenderer = WebRenderer(world: world)
+        self.webRenderer = WebRenderer(world: sceneEntities.world)
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -207,9 +138,11 @@ final class GameARView: ARView {
         self.towerLayoutConfig = .default
         self.towerTrack = TowerTrack(layout: .default)
         self.focusStateMachine = FocusStateMachine(timing: .default)
+        self.sceneEntities = GameSceneEntities()
+        self.towerPrototype = GameSceneEntities.makeTowerPrototype(towerHeight: TowerLayoutConfig.default.towerHeight)
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
-        self.webRenderer = WebRenderer(world: world)
+        self.webRenderer = WebRenderer(world: sceneEntities.world)
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -223,11 +156,11 @@ final class GameARView: ARView {
 
     // MARK: Keyboard focus & events
 
-    override var acceptsFirstResponder: Bool { true } // Needed to receive key events
+    override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self) // Attempt to grab keyboard focus
+        window?.makeFirstResponder(self)
         print("[focus] firstResponder =", String(describing: window?.firstResponder))
     }
 
@@ -252,7 +185,6 @@ final class GameARView: ARView {
         world.addChild(ground)
         addStreetReferenceProps()
 
-        // Player starts on the launch tower.
         playerPos = startPlayerPosition()
         player.position = playerPos
         playerVel = .zero
@@ -263,11 +195,9 @@ final class GameARView: ARView {
         world.addChild(guideTowerDebugSphere)
         setupLaunchPlatform()
 
-        // Generate rows of towers
         towerTrack.rebuild(in: world, prototype: towerPrototype)
         setTowerVisibility(false)
 
-        // Spatial audio: one looping source per tower, listener follows player
         audio.configureGeneratedTowerBaseLoop()
         _ = audio.configureBackgroundLoop(fileName: "background_music", fileExt: "wav")
 
@@ -282,19 +212,16 @@ final class GameARView: ARView {
         audioMixController.resetToNormalMix()
         audio.setListenerPosition(player.position(relativeTo: nil))
 
-        // Light so towers are visible
         let light = DirectionalLight()
         light.light.intensity = 2000
         light.look(at: .zero, from: [1, 2, 2], relativeTo: nil)
         world.addChild(light)
 
-        // Camera setup
         camera.camera.fieldOfViewInDegrees = 60
         camera.camera.near = 0.05
         camera.camera.far = 500
         camera.position = .zero
 
-        // Inverted sphere around the camera: keeps near objects visible and masks far objects to black.
         visibilityMaskSphere.position = .zero
         cameraAnchor.addChild(visibilityMaskSphere)
         cameraAnchor.addChild(camera)
@@ -304,7 +231,6 @@ final class GameARView: ARView {
     // MARK: Update loop (per frame)
 
     private func setupUpdateLoop() {
-        // SceneEvents.Update fires every frame
         updateSub = scene.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             guard let self else { return }
 
