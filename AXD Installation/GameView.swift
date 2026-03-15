@@ -242,7 +242,7 @@ final class GameARView: ARView {
         setTowerVisibility(false)
 
         // Spatial audio: one looping source per tower, listener follows player
-        audio.configure(loopFileName: "beep", fileExt: "wav")
+        audio.configureGeneratedTowerBaseLoop()
         _ = audio.configureBackgroundLoop(fileName: "background_music", fileExt: "wav")
 
         for node in towerTrack.nodes {
@@ -743,7 +743,6 @@ final class GameARView: ARView {
     }
 
     private func shootWeb(to side: TowerSide, preferredRowIndex: Int? = nil) {
-        // Target the next row
         let nextIndex = preferredRowIndex ?? towerTrack.nextIndex(fromSwingRow: swing?.rowIndex)
         guard let node = towerTrack.node(at: nextIndex) else {
             print("[web] no next tower")
@@ -773,10 +772,7 @@ final class GameARView: ARView {
         let maxByClearance = max(anchor.y - (worldPhysicsConfig.groundY + swingPhysicsConfig.minClearanceY), swingPhysicsConfig.ropeMinYZ)
         let ropeMax = min(swingPhysicsConfig.ropeMaxHard, maxByClearance)
 
-        // Target rope length (scaled + clamped)
         let ropeTargetYZ = min(max(measuredYZ * swingPhysicsConfig.ropeScale, swingPhysicsConfig.ropeMinYZ), ropeMax)
-
-        // Current rope length starts at measuredYZ (keeps current position -> no teleport)
         let ropeCurrentYZ = measuredYZ
 
         swing = SwingState(anchor: anchor,
@@ -785,6 +781,9 @@ final class GameARView: ARView {
                            towerZ: towerPos.z,
                            rowIndex: nextIndex,
                            side: side)
+        if let sourceID = audioMixController.sourceID(forRowIndex: nextIndex) {
+            audio.setSourceToneVariant(sourceID: sourceID, variant: .muffled)
+        }
 
         print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
                      measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
@@ -838,14 +837,13 @@ final class GameARView: ARView {
         let passedRow = swingState.rowIndex
 
         if successful {
-            // Keep successful releases readable: prevent excessive upward launch when releasing late.
             playerVel.y = min(playerVel.y, releaseConfig.upwardVelocityCap)
         }
 
         swing = nil
         webRenderer.hideWeb()
         gameStateMachine.transition(to: .falling)
-        audioMixController.fadeOutTowerRow(passedRow, duration: 1.0)
+        audioMixController.fadeOutTowerRow(passedRow, duration: 0.6, startLevel: 0.16)
 
         if successful {
             scheduleFocusForNextTower(afterRowIndex: passedRow)
@@ -1007,7 +1005,6 @@ final class GameARView: ARView {
     // MARK: Ground
 
     private func makeGroundEntity() -> ModelEntity {
-        // Ground size: wide enough for lanes; deep enough to cover the farthest tower row
         let width: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
         let farthestTowerDistance = towerLayoutConfig.firstRowDistance
             + Float(max(towerLayoutConfig.rowCount - 1, 0)) * towerLayoutConfig.rowSpacing
@@ -1017,7 +1014,6 @@ final class GameARView: ARView {
         let mat = SimpleMaterial(color: .darkGray, isMetallic: false)
         let ground = ModelEntity(mesh: mesh, materials: [mat])
 
-        // Place so the top surface is at y=0, extending from z=0 forward into negative Z
         ground.position = [0, -groundThickness * 0.5, -depth * 0.5]
         return ground
     }
@@ -1032,7 +1028,6 @@ final class GameARView: ARView {
         let edgeLineMat = SimpleMaterial(color: .white, isMetallic: false)
         let centerLineMat = SimpleMaterial(color: .yellow, isMetallic: false)
 
-        // Left and right solid lane boundary lines.
         let edgeLineSize = SIMD3<Float>(0.10, 0.005, roadDepth)
         let leftEdgeLine = ModelEntity(mesh: .generateBox(size: edgeLineSize), materials: [edgeLineMat])
         leftEdgeLine.position = [-(roadWidth * 0.5) + 0.5, lineY, -roadDepth * 0.5]
@@ -1042,7 +1037,6 @@ final class GameARView: ARView {
         rightEdgeLine.position = [(roadWidth * 0.5) - 0.5, lineY, -roadDepth * 0.5]
         world.addChild(rightEdgeLine)
 
-        // Dashed center line to provide strong speed reference.
         let dashLength: Float = 2.0
         let gapLength: Float = 2.0
         let dashStride = dashLength + gapLength
@@ -1056,7 +1050,6 @@ final class GameARView: ARView {
             world.addChild(dash)
         }
 
-        // Simple parked-car blocks as nearby scale references.
         let carBodyColors: [NSColor] = [.systemBlue, .systemRed, .systemGray, .systemGreen]
         let carBodySize = SIMD3<Float>(1.8, 1.0, 3.8)
         let carSideX = (roadWidth * 0.5) - 1.6

@@ -9,12 +9,19 @@ import Foundation
 import AVFoundation
 import simd
 
+enum TowerToneVariant {
+    case normal
+    case muffled
+}
+
 final class SpatialAudioRig {
     private let engine = AVAudioEngine()
     private let environment = AVAudioEnvironmentNode()
 
-    private var loopBuffer: AVAudioPCMBuffer?
+    private var normalLoopBuffer: AVAudioPCMBuffer?
+    private var muffledLoopBuffer: AVAudioPCMBuffer?
     private var sources: [UUID: AVAudioPlayerNode] = [:]
+    private var sourceToneVariants: [UUID: TowerToneVariant] = [:]
     private var backgroundBuffer: AVAudioPCMBuffer?
     private var backgroundNode: AVAudioPlayerNode?
     private var started = false
@@ -39,7 +46,8 @@ final class SpatialAudioRig {
         engine.connect(environment, to: engine.mainMixerNode, format: nil)
 
         let monoBuffer = loadLoopBufferNamed(loopFileName, ext: fileExt)
-        self.loopBuffer = monoBuffer
+        normalLoopBuffer = monoBuffer
+        muffledLoopBuffer = monoBuffer
 
         // Environment settings: HRTF and distance attenuation.
         environment.renderingAlgorithm = .HRTF
@@ -51,10 +59,26 @@ final class SpatialAudioRig {
         print("[audio] configured. sr=\(monoBuffer.format.sampleRate) ch=\(monoBuffer.format.channelCount)")
     }
 
+    // Build a procedural "tower beacon" loop in code (no source file needed).
+    func configureGeneratedTowerBaseLoop() {
+        guard !started else { return }
+
+        engine.attach(environment)
+        engine.connect(environment, to: engine.mainMixerNode, format: nil)
+
+        normalLoopBuffer = TowerToneGenerator.makeGeneratedTowerLoopBuffer()
+        muffledLoopBuffer = TowerToneGenerator.makeGeneratedMuffledTowerLoopBuffer()
+
+        environment.renderingAlgorithm = .HRTF
+        environment.distanceAttenuationParameters.distanceAttenuationModel = .inverse
+        applyAttenuation(normalAttenuation)
+        print("[audio] configured generated tower loop. sr=\(normalLoopBuffer?.format.sampleRate ?? 0)")
+    }
+
     // 2) Add one looping 3D source for each tower.
     @discardableResult
-    func addLoopingSource(at position: SIMD3<Float>, volume: Float = 0.25) -> UUID {
-        guard let buf = loopBuffer else {
+    func addLoopingSource(at position: SIMD3<Float>, volume: Float = 0.25, toneVariant: TowerToneVariant = .normal) -> UUID {
+        guard let buf = loopBuffer(for: toneVariant) else {
             fatalError("Call configure(...) before addLoopingSource(...)")
         }
 
@@ -77,7 +101,21 @@ final class SpatialAudioRig {
         node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
 
         sources[id] = node
+        sourceToneVariants[id] = toneVariant
         return id
+    }
+
+    func setSourceToneVariant(sourceID: UUID, variant: TowerToneVariant) {
+        guard let node = sources[sourceID] else { return }
+        guard sourceToneVariants[sourceID] != variant else { return }
+        guard let buffer = loopBuffer(for: variant) else { return }
+
+        sourceToneVariants[sourceID] = variant
+        node.stop()
+        node.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
+        if started {
+            node.play()
+        }
     }
 
     @discardableResult
@@ -160,11 +198,12 @@ final class SpatialAudioRig {
     }
 
     func restartAllLoopsFromBeginning() {
-        guard let buf = loopBuffer else { return }
+        guard let normalBuffer = normalLoopBuffer else { return }
 
-        for (_, node) in sources {
+        for (id, node) in sources {
+            sourceToneVariants[id] = .normal
             node.stop()
-            node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
+            node.scheduleBuffer(normalBuffer, at: nil, options: [.loops], completionHandler: nil)
             if started {
                 node.play()
             }
@@ -237,4 +276,14 @@ final class SpatialAudioRig {
         environment.distanceAttenuationParameters.maximumDistance = profile.maximumDistance
         environment.distanceAttenuationParameters.rolloffFactor = profile.rolloffFactor
     }
+
+    private func loopBuffer(for variant: TowerToneVariant) -> AVAudioPCMBuffer? {
+        switch variant {
+        case .normal:
+            return normalLoopBuffer
+        case .muffled:
+            return muffledLoopBuffer ?? normalLoopBuffer
+        }
+    }
+
 }
