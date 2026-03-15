@@ -176,9 +176,9 @@ final class GameARView: ARView {
     private var pendingChordReleaseSide: TowerSide? = nil
     private var pendingChordReleaseElapsed: Float = 0.0
     private var launchPrepTransition: Float = 0.0
-    private var pendingFocusFromLaunchArc: Bool = false
-    private var towerAudioEnabled: Bool = false
-    private var releaseCueAudioPhase: ReleaseCueAudioPhase = .idle
+    private var isFocusPendingFromLaunchArc: Bool = false
+    private var isTowerAudioEnabled: Bool = false
+    private var releaseWindowAudioPhase: ReleaseCueAudioPhase = .idle
 
     // MARK: Init
 
@@ -433,10 +433,10 @@ final class GameARView: ARView {
         playerPos += playerVel * dt
         playerPos.x = worldPhysicsConfig.centerX
 
-        if pendingFocusFromLaunchArc,
+        if isFocusPendingFromLaunchArc,
            playerVel.y <= 0,
            playerPos.y <= launchSequenceConfig.focusTriggerHeight {
-            pendingFocusFromLaunchArc = false
+            isFocusPendingFromLaunchArc = false
             if gameStateMachine.isGrounded {
                 gameStateMachine.transition(to: .falling)
             }
@@ -466,10 +466,10 @@ final class GameARView: ARView {
         // Listener always follows the player
         audio.setListenerPosition(playerPos)
         updateReleaseCueIndicator()
-        let guidance = towerAudioEnabled ? audioGuidance() : nil
+        let guidance = isTowerAudioEnabled ? audioGuidance() : nil
         updateTowerAudioSourcePositions()
         updateGuideAudioSource(guidance: guidance)
-        let nearestRow = towerAudioEnabled ? audibleTowerRowIndex(to: playerPos) : nil
+        let nearestRow = isTowerAudioEnabled ? audibleTowerRowIndex(to: playerPos) : nil
         audioMixController.setNearestAudibleRowIndex(
             selectedAudibleRowIndex(nearestRowIndex: nearestRow, guidance: guidance)
         )
@@ -489,7 +489,7 @@ final class GameARView: ARView {
     }
 
     private func selectedAudibleRowIndex(nearestRowIndex: Int?, guidance: AudioGuidance?) -> Int? {
-        switch releaseCueAudioPhase {
+        switch releaseWindowAudioPhase {
         case .silencingBeforeGreen, .waitingAfterGreen:
             return nil
         case .leadingNextTower(let rowIndex):
@@ -528,19 +528,19 @@ final class GameARView: ARView {
     }
 
     private func guidedAudioPosition(for towerPosition: SIMD3<Float>) -> SIMD3<Float> {
-        guard audioGuidanceConfig.isPositionExaggerationEnabled else {
+        guard audioGuidanceConfig.isGuidePositionOffsetEnabled else {
             return towerPosition
         }
 
         let deltaXZ = SIMD2<Float>(towerPosition.x - playerPos.x, towerPosition.z - playerPos.z)
         let distance = max(simd_length(deltaXZ), 0.001)
 
-        let farDistance = max(audioGuidanceConfig.maxDistanceMeters, audioGuidanceConfig.minDistanceMeters + 0.01)
-        let normalizedFar = (distance - audioGuidanceConfig.minDistanceMeters) / (farDistance - audioGuidanceConfig.minDistanceMeters)
-        let farBlend = min(max(normalizedFar, 0.0), 1.0)
+        let maxDistance = max(audioGuidanceConfig.maxDistanceMeters, audioGuidanceConfig.minDistanceMeters + 0.01)
+        let normalizedDistance = (distance - audioGuidanceConfig.minDistanceMeters) / (maxDistance - audioGuidanceConfig.minDistanceMeters)
+        let distanceBlend = min(max(normalizedDistance, 0.0), 1.0)
         // Curve the response so lateral cue stays obvious longer, while depth pull-in is gentler.
-        let lateralBlend = 1.0 - pow(1.0 - farBlend, 2.2)
-        let depthBlend = pow(farBlend, 1.35)
+        let lateralBlend = 1.0 - pow(1.0 - distanceBlend, 2.2)
+        let depthBlend = pow(distanceBlend, 1.35)
         let lateralScale = 1.0 + (audioGuidanceConfig.xScaleAtMaxDistance - 1.0) * lateralBlend
         let depthScale = 1.0 - (1.0 - audioGuidanceConfig.zScaleAtMaxDistance) * depthBlend
 
@@ -634,8 +634,8 @@ final class GameARView: ARView {
         // Reset core gameplay state
         swing = nil
         resetLaunchPrepState()
-        pendingFocusFromLaunchArc = false
-        towerAudioEnabled = false
+        isFocusPendingFromLaunchArc = false
+        isTowerAudioEnabled = false
         launchPrepTransition = 0.0
         setTowerVisibility(false)
         gameStateMachine.transition(to: .rooftop)
@@ -803,9 +803,9 @@ final class GameARView: ARView {
 
         resetLaunchPrepState()
         webRenderer.hideAllPrepWebs()
-        towerAudioEnabled = true
+        isTowerAudioEnabled = true
         setTowerVisibility(true)
-        pendingFocusFromLaunchArc = true
+        isFocusPendingFromLaunchArc = true
         gameStateMachine.transition(to: .falling)
         print("[launch] released with speed=\(speed)")
     }
@@ -930,24 +930,24 @@ final class GameARView: ARView {
         let shouldStartFadeOut = inYellowPhaseBeforeGreen
             && timeToGreen <= releaseCueAudioConfig.fadeOutLeadTimeBeforeGreenSeconds
 
-        if shouldStartFadeOut && releaseCueAudioPhase == .idle {
-            releaseCueAudioPhase = .silencingBeforeGreen
+        if shouldStartFadeOut && releaseWindowAudioPhase == .idle {
+            releaseWindowAudioPhase = .silencingBeforeGreen
             audioMixController.fadeOutTowerRow(
                 swingState.rowIndex,
                 duration: releaseCueAudioConfig.fadeOutDurationSeconds,
-                startLevel: releaseCueAudioConfig.fadeOutStartLevel
+                startLevel: releaseCueAudioConfig.fadeOutInitialLevel
             )
         }
 
         guard isSuccessfulReleaseWindow(swingState: swingState) else {
-            if case .waitingAfterGreen = releaseCueAudioPhase {
-                releaseCueAudioPhase = .silencingBeforeGreen
+            if case .waitingAfterGreen = releaseWindowAudioPhase {
+                releaseWindowAudioPhase = .silencingBeforeGreen
             }
             return
         }
 
         let updatedElapsed: Float
-        switch releaseCueAudioPhase {
+        switch releaseWindowAudioPhase {
         case .waitingAfterGreen(let elapsed):
             updatedElapsed = elapsed + max(dt, 0)
         case .leadingNextTower:
@@ -957,20 +957,20 @@ final class GameARView: ARView {
         }
 
         guard updatedElapsed >= releaseCueAudioConfig.towerFadeInDelayAfterGreenSeconds else {
-            releaseCueAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
+            releaseWindowAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
             return
         }
 
         let nextRowIndex = swingState.rowIndex + 1
         if towerTrack.node(at: nextRowIndex) != nil {
-            releaseCueAudioPhase = .leadingNextTower(rowIndex: nextRowIndex)
+            releaseWindowAudioPhase = .leadingNextTower(rowIndex: nextRowIndex)
         } else {
-            releaseCueAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
+            releaseWindowAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
         }
     }
 
     private func resetReleaseCueAudioTransitionState() {
-        releaseCueAudioPhase = .idle
+        releaseWindowAudioPhase = .idle
     }
 
     private func updateReleaseCueIndicator() {

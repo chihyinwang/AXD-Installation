@@ -35,13 +35,13 @@ extension GameARView {
     struct ReleaseCueAudioConfig {
         let fadeOutLeadTimeBeforeGreenSeconds: Float
         let fadeOutDurationSeconds: Float
-        let fadeOutStartLevel: Float
+        let fadeOutInitialLevel: Float
         let towerFadeInDelayAfterGreenSeconds: Float
 
         static let `default` = ReleaseCueAudioConfig(
             fadeOutLeadTimeBeforeGreenSeconds: 0.2,
             fadeOutDurationSeconds: 0.3,
-            fadeOutStartLevel: 0.16,
+            fadeOutInitialLevel: 0.16,
             towerFadeInDelayAfterGreenSeconds: 0.1
         )
     }
@@ -113,14 +113,14 @@ extension GameARView {
     }
 
     struct AudioGuidanceConfig {
-        let isPositionExaggerationEnabled: Bool
+        let isGuidePositionOffsetEnabled: Bool
         let maxDistanceMeters: Float
         let minDistanceMeters: Float
         let xScaleAtMaxDistance: Float
         let zScaleAtMaxDistance: Float
 
         static let `default` = AudioGuidanceConfig(
-            isPositionExaggerationEnabled: true,
+            isGuidePositionOffsetEnabled: true,
             maxDistanceMeters: 16.5,
             minDistanceMeters: 11.5,
             xScaleAtMaxDistance: 3.0,
