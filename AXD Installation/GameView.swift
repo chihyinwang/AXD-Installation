@@ -31,6 +31,12 @@ struct GameView: NSViewRepresentable {
 // MARK: - RealityKit View (macOS desktop, non-AR)
 
 final class GameARView: ARView {
+    private enum ReleaseCueAudioPhase: Equatable {
+        case idle
+        case silencingBeforeGreen
+        case waitingAfterGreen(elapsed: Float)
+        case leadingNextTower(rowIndex: Int)
+    }
 
     // MARK: Configuration (tuning knobs)
 
@@ -38,8 +44,11 @@ final class GameARView: ARView {
     private let worldPhysicsConfig: WorldPhysicsConfig = .default
     private let rearTowerAudibleDistance: Float = 6.0
     private let releaseConfig: ReleaseConfig = .default
+    private let releaseCueAudioConfig: ReleaseCueAudioConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
     private let launchSequenceConfig: LaunchSequenceConfig = .default
+    private let audioGuidanceConfig: AudioGuidanceConfig = .default
+    private let debugConfig: DebugConfig = .default
     private let failedWebShotForwardDistance: Float = 7.0
     private let failedWebShotLateralDistance: Float = 2.6
     private let failedWebShotVerticalOffset: Float = 0.6
@@ -88,6 +97,20 @@ final class GameARView: ARView {
         let indicator = ModelEntity(mesh: mesh, materials: [material])
         indicator.scale = .zero
         return indicator
+    }()
+    private let guideDebugSphere: ModelEntity = {
+        let mesh = MeshResource.generateSphere(radius: 0.28)
+        let material = UnlitMaterial(color: .red)
+        let sphere = ModelEntity(mesh: mesh, materials: [material])
+        sphere.scale = .zero
+        return sphere
+    }()
+    private let guideTowerDebugSphere: ModelEntity = {
+        let mesh = MeshResource.generateSphere(radius: 0.22)
+        let material = UnlitMaterial(color: .systemBlue)
+        let sphere = ModelEntity(mesh: mesh, materials: [material])
+        sphere.scale = .zero
+        return sphere
     }()
     private let startTowerEntity: ModelEntity = {
         let mesh = MeshResource.generateBox(size: [0.55, 4.0, 0.55])
@@ -155,6 +178,7 @@ final class GameARView: ARView {
     private var launchPrepTransition: Float = 0.0
     private var pendingFocusFromLaunchArc: Bool = false
     private var towerAudioEnabled: Bool = false
+    private var releaseCueAudioPhase: ReleaseCueAudioPhase = .idle
 
     // MARK: Init
 
@@ -235,6 +259,8 @@ final class GameARView: ARView {
         gameStateMachine.transition(to: .rooftop)
         world.addChild(player)
         world.addChild(releaseCueIndicator)
+        world.addChild(guideDebugSphere)
+        world.addChild(guideTowerDebugSphere)
         setupLaunchPlatform()
 
         // Generate rows of towers
@@ -389,6 +415,7 @@ final class GameARView: ARView {
 
         // 5) Update web every frame (sticks to player + anchor)
         webRenderer.updateWeb(from: playerPos, to: s.anchor)
+        updateReleaseCueAudioTransition(swingState: s, dt: dt)
 
         if hasMissedReleaseWindow(swingState: s) {
             print("[web] release window missed -> fail drop")
@@ -462,6 +489,14 @@ final class GameARView: ARView {
     }
 
     private func selectedAudibleRowIndex(nearestRowIndex: Int?, guidance: AudioGuidance?) -> Int? {
+        switch releaseCueAudioPhase {
+        case .silencingBeforeGreen, .waitingAfterGreen:
+            return nil
+        case .leadingNextTower(let rowIndex):
+            return rowIndex
+        case .idle:
+            break
+        }
         if focusActive {
             return guidance?.targetRowIndex ?? nearestRowIndex
         }
@@ -481,12 +516,75 @@ final class GameARView: ARView {
         guard let guidance,
               let targetNode = towerTrack.node(at: guidance.targetRowIndex) else {
             audioMixController.setGuideBlend(0.0)
+            setGuideDebugSpheresVisible(false)
             return
         }
 
         let towerPosition = targetNode.tower.position(relativeTo: nil)
-        audioMixController.setGuideSourcePosition(towerPosition)
+        let guidePosition = guidedAudioPosition(for: towerPosition)
+        audioMixController.setGuideSourcePosition(guidePosition)
         audioMixController.setGuideBlend(guidance.blend)
+        updateGuideDebugSphere(position: guidePosition)
+    }
+
+    private func guidedAudioPosition(for towerPosition: SIMD3<Float>) -> SIMD3<Float> {
+        guard audioGuidanceConfig.isPositionExaggerationEnabled else {
+            return towerPosition
+        }
+
+        let deltaXZ = SIMD2<Float>(towerPosition.x - playerPos.x, towerPosition.z - playerPos.z)
+        let distance = max(simd_length(deltaXZ), 0.001)
+
+        let farDistance = max(audioGuidanceConfig.maxDistanceMeters, audioGuidanceConfig.minDistanceMeters + 0.01)
+        let normalizedFar = (distance - audioGuidanceConfig.minDistanceMeters) / (farDistance - audioGuidanceConfig.minDistanceMeters)
+        let farBlend = min(max(normalizedFar, 0.0), 1.0)
+        // Curve the response so lateral cue stays obvious longer, while depth pull-in is gentler.
+        let lateralBlend = 1.0 - pow(1.0 - farBlend, 2.2)
+        let depthBlend = pow(farBlend, 1.35)
+        let lateralScale = 1.0 + (audioGuidanceConfig.xScaleAtMaxDistance - 1.0) * lateralBlend
+        let depthScale = 1.0 - (1.0 - audioGuidanceConfig.zScaleAtMaxDistance) * depthBlend
+
+        return SIMD3<Float>(
+            playerPos.x + (towerPosition.x - playerPos.x) * lateralScale,
+            towerPosition.y,
+            playerPos.z + (towerPosition.z - playerPos.z) * depthScale
+        )
+    }
+
+    private func updateGuideDebugSphere(position: SIMD3<Float>) {
+        let isVisible = focusActive && debugConfig.showGuideDebugSpheres
+        setGuideDebugSpheresVisible(isVisible)
+        guard isVisible else { return }
+        guideDebugSphere.position = visibleDebugGuidePosition(for: position)
+        if let guidedTargetRowIndex,
+           let targetNode = towerTrack.node(at: guidedTargetRowIndex) {
+            let towerPosition = targetNode.tower.position(relativeTo: nil)
+            guideTowerDebugSphere.position = visibleDebugGuidePosition(for: towerPosition)
+        }
+    }
+
+    private func setGuideDebugSpheresVisible(_ visible: Bool) {
+        guideDebugSphere.scale = visible ? SIMD3<Float>(repeating: 1.0) : .zero
+        guideTowerDebugSphere.scale = visible ? SIMD3<Float>(repeating: 1.0) : .zero
+    }
+
+    private func visibleDebugGuidePosition(for guideWorldPosition: SIMD3<Float>) -> SIMD3<Float> {
+        let cameraPosition = cameraAnchor.position(relativeTo: nil)
+        let cameraToPlayerDistance = simd_distance(cameraPosition, playerPos)
+        let maskRadius = max(
+            cameraFollowConfig.visibilityMinDistance,
+            cameraToPlayerDistance + cameraFollowConfig.visibilityExtraDistance
+        )
+        let maxVisibleDistance = max(maskRadius - 0.25, 0.5)
+
+        let delta = guideWorldPosition - cameraPosition
+        let distance = simd_length(delta)
+        guard distance > maxVisibleDistance, distance > 0.001 else {
+            return guideWorldPosition
+        }
+
+        let direction = delta / distance
+        return cameraPosition + direction * maxVisibleDistance
     }
 
     private func audibleTowerRowIndex(to position: SIMD3<Float>) -> Int? {
@@ -543,6 +641,7 @@ final class GameARView: ARView {
         gameStateMachine.transition(to: .rooftop)
         playerPos = startPlayerPosition()
         playerVel = .zero
+        resetReleaseCueAudioTransitionState()
 
         // Reset progression / focus / guidance
         towerTrack.resetProgress()
@@ -756,6 +855,7 @@ final class GameARView: ARView {
 
         let tower = node.tower
         let towerPos = tower.position(relativeTo: nil)
+        resetReleaseCueAudioTransitionState()
 
         // Anchor = top of tower + extra height (to increase swing angle)
         let towerTopY = towerPos.y + towerLayoutConfig.towerHeight * 0.5
@@ -821,6 +921,58 @@ final class GameARView: ARView {
         return passedReleaseEnd || passedStartAndDescending
     }
 
+    private func updateReleaseCueAudioTransition(swingState: SwingState, dt: Float) {
+        let releaseStartZ = swingState.towerZ - swingPhysicsConfig.detachAfterPassing
+        let zDistanceToGreen = max(playerPos.z - releaseStartZ, 0.0)
+        let forwardSpeedTowardGreen = max(-playerVel.z, 0.0)
+        let timeToGreen = zDistanceToGreen / max(forwardSpeedTowardGreen, 0.001)
+        let inYellowPhaseBeforeGreen = playerPos.z > releaseStartZ
+        let shouldStartFadeOut = inYellowPhaseBeforeGreen
+            && timeToGreen <= releaseCueAudioConfig.fadeOutLeadTimeBeforeGreenSeconds
+
+        if shouldStartFadeOut && releaseCueAudioPhase == .idle {
+            releaseCueAudioPhase = .silencingBeforeGreen
+            audioMixController.fadeOutTowerRow(
+                swingState.rowIndex,
+                duration: releaseCueAudioConfig.fadeOutDurationSeconds,
+                startLevel: releaseCueAudioConfig.fadeOutStartLevel
+            )
+        }
+
+        guard isSuccessfulReleaseWindow(swingState: swingState) else {
+            if case .waitingAfterGreen = releaseCueAudioPhase {
+                releaseCueAudioPhase = .silencingBeforeGreen
+            }
+            return
+        }
+
+        let updatedElapsed: Float
+        switch releaseCueAudioPhase {
+        case .waitingAfterGreen(let elapsed):
+            updatedElapsed = elapsed + max(dt, 0)
+        case .leadingNextTower:
+            return
+        default:
+            updatedElapsed = max(dt, 0)
+        }
+
+        guard updatedElapsed >= releaseCueAudioConfig.towerFadeInDelayAfterGreenSeconds else {
+            releaseCueAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
+            return
+        }
+
+        let nextRowIndex = swingState.rowIndex + 1
+        if towerTrack.node(at: nextRowIndex) != nil {
+            releaseCueAudioPhase = .leadingNextTower(rowIndex: nextRowIndex)
+        } else {
+            releaseCueAudioPhase = .waitingAfterGreen(elapsed: updatedElapsed)
+        }
+    }
+
+    private func resetReleaseCueAudioTransitionState() {
+        releaseCueAudioPhase = .idle
+    }
+
     private func updateReleaseCueIndicator() {
         guard let swing, gameStateMachine.state == .swinging else {
             releaseCueIndicator.scale = .zero
@@ -850,6 +1002,7 @@ final class GameARView: ARView {
             return
         }
 
+        resetReleaseCueAudioTransitionState()
         focusStateMachine.reset()
         expectedNextSide = nil
         guidedTargetRowIndex = nil

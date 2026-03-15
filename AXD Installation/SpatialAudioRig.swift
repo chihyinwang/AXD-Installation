@@ -38,27 +38,6 @@ final class SpatialAudioRig {
         rolloffFactor: 3.0
     )
 
-    // 1) Build the audio graph first: environment -> mainMixer.
-    func configure(loopFileName: String, fileExt: String = "wav") {
-        guard !started else { return }
-
-        engine.attach(environment)
-        engine.connect(environment, to: engine.mainMixerNode, format: nil)
-
-        let monoBuffer = loadLoopBufferNamed(loopFileName, ext: fileExt)
-        normalLoopBuffer = monoBuffer
-        muffledLoopBuffer = monoBuffer
-
-        // Environment settings: HRTF and distance attenuation.
-        environment.renderingAlgorithm = .HRTF
-        environment.distanceAttenuationParameters.distanceAttenuationModel = .inverse
-        applyAttenuation(normalAttenuation)
-        // Distance attenuation parameters are configured on the environment node.
-        // :contentReference[oaicite:0]{index=0}
-
-        print("[audio] configured. sr=\(monoBuffer.format.sampleRate) ch=\(monoBuffer.format.channelCount)")
-    }
-
     // Build a procedural "tower beacon" loop in code (no source file needed).
     func configureGeneratedTowerBaseLoop() {
         guard !started else { return }
@@ -215,59 +194,6 @@ final class SpatialAudioRig {
             if started {
                 backgroundNode.play()
             }
-        }
-    }
-
-    // MARK: - Loading & Downmix (avoid channel mismatch)
-    private func loadLoopBufferNamed(_ name: String, ext: String) -> AVAudioPCMBuffer {
-        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
-            fatalError("Missing audio file in bundle: \(name).\(ext)")
-        }
-
-        do {
-            let file = try AVAudioFile(forReading: url)
-            let inFormat = file.processingFormat
-            let frameCount = AVAudioFrameCount(file.length)
-
-            guard let inBuffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frameCount) else {
-                fatalError("Failed to create input buffer")
-            }
-            try file.read(into: inBuffer)
-
-            if inFormat.channelCount == 1 { return inBuffer }
-
-            let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                           sampleRate: inFormat.sampleRate,
-                                           channels: 1,
-                                           interleaved: false)!
-            guard let outBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: inBuffer.frameCapacity) else {
-                fatalError("Failed to create mono buffer")
-            }
-            outBuffer.frameLength = inBuffer.frameLength
-
-            guard let converter = AVAudioConverter(from: inFormat, to: monoFormat) else {
-                fatalError("Failed to create converter")
-            }
-
-            var didProvide = false
-            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                if didProvide {
-                    outStatus.pointee = .noDataNow
-                    return nil
-                }
-                didProvide = true
-                outStatus.pointee = .haveData
-                return inBuffer
-            }
-
-            var err: NSError?
-            converter.convert(to: outBuffer, error: &err, withInputFrom: inputBlock)
-            if let err { fatalError("Downmix failed: \(err)") }
-
-            print("[audio] downmixed to mono")
-            return outBuffer
-        } catch {
-            fatalError("Failed reading audio: \(error)")
         }
     }
 

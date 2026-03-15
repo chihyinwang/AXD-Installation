@@ -18,7 +18,7 @@ struct TowerAudioMixSettings {
         activeTowerVolume: 4.0,
         backgroundVolumeNormal: 0.04,
         backgroundVolumeInFocus: 0.004,
-        focusGuideCueVolume: 0.22,
+        focusGuideCueVolume: 3.0,
         focusFadeInDuration: 0.12,
         focusFadeOutDuration: 0.22,
         leadSwitchTailLevel: 0.28,
@@ -142,9 +142,11 @@ final class TowerAudioMixController {
         for (rowIndex, id) in towerAudioIDs.enumerated() {
             let isNearest = (rowIndex == activeLeadRowIndex)
             let fadeMultiplier = towerFadeMultipliers[rowIndex]
-            let targetVolume: Float = isNearest
+            let baseTargetVolume: Float = isNearest
                 ? settings.activeTowerVolume
                 : (settings.activeTowerVolume * fadeMultiplier)
+            let focusTowerScale = 1.0 - focusAmount
+            let targetVolume = baseTargetVolume * focusTowerScale
             let currentVolume = towerCurrentVolumes[rowIndex]
             let transitionDuration = (targetVolume > currentVolume)
                 ? settings.towerVolumeAttackDuration
