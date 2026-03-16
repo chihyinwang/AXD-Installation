@@ -114,17 +114,27 @@ extension GameARView {
 
     struct AudioGuidanceConfig {
         let isGuidePositionOffsetEnabled: Bool
+        let isGuideDistanceLowPassEnabled: Bool
         let maxDistanceMeters: Float
         let minDistanceMeters: Float
         let xScaleAtMaxDistance: Float
         let zScaleAtMaxDistance: Float
+        let lowPassNearDistanceMeters: Float
+        let lowPassFarDistanceMeters: Float
+        let lowPassNearCutoffHz: Float
+        let lowPassFarCutoffHz: Float
 
         static let `default` = AudioGuidanceConfig(
             isGuidePositionOffsetEnabled: true,
+            isGuideDistanceLowPassEnabled: true,
             maxDistanceMeters: 16.5,
             minDistanceMeters: 11.5,
             xScaleAtMaxDistance: 3.0,
-            zScaleAtMaxDistance: 0.8
+            zScaleAtMaxDistance: 0.8,
+            lowPassNearDistanceMeters: 11.0,
+            lowPassFarDistanceMeters: 18.0,
+            lowPassNearCutoffHz: 2200,
+            lowPassFarCutoffHz: 280
         )
     }
 

@@ -414,12 +414,16 @@ final class GameARView: ARView {
     }
 
     private func audioGuidance() -> AudioGuidance? {
-        guard let targetRowIndex = guidedTargetRowIndex,
+        let candidateRowIndex = guidedTargetRowIndex ?? swing?.rowIndex
+        guard let targetRowIndex = candidateRowIndex,
               towerTrack.node(at: targetRowIndex) != nil else {
             return nil
         }
 
         if focusActive {
+            return AudioGuidance(targetRowIndex: targetRowIndex, blend: 1.0)
+        }
+        if swing != nil {
             return AudioGuidance(targetRowIndex: targetRowIndex, blend: 1.0)
         }
         return nil
@@ -459,6 +463,16 @@ final class GameARView: ARView {
 
         let towerPosition = targetNode.tower.position(relativeTo: nil)
         let guidePosition = guidedAudioPosition(for: towerPosition)
+        if audioGuidanceConfig.isGuideDistanceLowPassEnabled {
+            let trueDistance = simd_distance(playerPos, towerPosition)
+            audioMixController.setGuideDistanceLowPass(
+                distanceMeters: trueDistance,
+                nearDistanceMeters: audioGuidanceConfig.lowPassNearDistanceMeters,
+                farDistanceMeters: audioGuidanceConfig.lowPassFarDistanceMeters,
+                nearCutoffHz: audioGuidanceConfig.lowPassNearCutoffHz,
+                farCutoffHz: audioGuidanceConfig.lowPassFarCutoffHz
+            )
+        }
         audioMixController.setGuideSourcePosition(guidePosition)
         audioMixController.setGuideBlend(guidance.blend)
         updateGuideDebugSphere(position: guidePosition)
@@ -822,6 +836,7 @@ final class GameARView: ARView {
         if let sourceID = audioMixController.sourceID(forRowIndex: nextIndex) {
             audio.setSourceToneVariant(sourceID: sourceID, variant: .muffled)
         }
+        audioMixController.setGuideToneVariant(.muffled)
 
         print(String(format: "[web] measuredYZ=%.2f targetYZ=%.2f anchorY=%.2f minY(target)≈%.2f",
                      measuredYZ, ropeTargetYZ, anchor.y, anchor.y - ropeTargetYZ))
@@ -934,6 +949,7 @@ final class GameARView: ARView {
         webRenderer.dropCurrentWebSoftly(from: playerPos, to: swingState.anchor)
         gameStateMachine.transition(to: .falling)
         audioMixController.fadeOutTowerRow(passedRow, duration: 0.6, startLevel: 0.16)
+        audioMixController.setGuideToneVariantSmooth(.normal, duration: 0.5)
 
         if successful {
             scheduleFocusForNextTower(afterRowIndex: passedRow)

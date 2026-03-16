@@ -21,6 +21,7 @@ final class SpatialAudioRig {
     private var normalLoopBuffer: AVAudioPCMBuffer?
     private var muffledLoopBuffer: AVAudioPCMBuffer?
     private var sources: [UUID: AVAudioPlayerNode] = [:]
+    private var sourceFilters: [UUID: AVAudioUnitEQ] = [:]
     private var sourceToneVariants: [UUID: TowerToneVariant] = [:]
     private var backgroundBuffer: AVAudioPCMBuffer?
     private var backgroundNode: AVAudioPlayerNode?
@@ -63,9 +64,18 @@ final class SpatialAudioRig {
 
         let id = UUID()
         let node = AVAudioPlayerNode()
+        let filter = AVAudioUnitEQ(numberOfBands: 1)
+        let lowPassBand = filter.bands[0]
+        lowPassBand.filterType = .lowPass
+        lowPassBand.frequency = 16_000
+        lowPassBand.bandwidth = 0.5
+        lowPassBand.bypass = false
+        lowPassBand.gain = 0.0
 
         engine.attach(node)
-        engine.connect(node, to: environment, format: buf.format)
+        engine.attach(filter)
+        engine.connect(node, to: filter, format: buf.format)
+        engine.connect(filter, to: environment, format: buf.format)
 
         // Important: AVAudioEnvironmentNode spatializes mono input, so force a mono buffer.
         // :contentReference[oaicite:1]{index=1}
@@ -80,6 +90,7 @@ final class SpatialAudioRig {
         node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
 
         sources[id] = node
+        sourceFilters[id] = filter
         sourceToneVariants[id] = toneVariant
         return id
     }
@@ -170,6 +181,27 @@ final class SpatialAudioRig {
     func setSourceVolume(sourceID: UUID, volume: Float) {
         guard let node = sources[sourceID] else { return }
         node.volume = max(0.0, volume)
+    }
+
+    func setSourceDistanceLowPass(sourceID: UUID,
+                                  distanceMeters: Float,
+                                  nearDistanceMeters: Float,
+                                  farDistanceMeters: Float,
+                                  nearCutoffHz: Float,
+                                  farCutoffHz: Float) {
+        guard let filter = sourceFilters[sourceID] else { return }
+        guard let lowPassBand = filter.bands.first else { return }
+
+        let clampedNearDistance = max(nearDistanceMeters, 0.001)
+        let clampedFarDistance = max(farDistanceMeters, clampedNearDistance + 0.001)
+        let clampedNearCutoff = max(nearCutoffHz, 80.0)
+        let clampedFarCutoff = max(min(farCutoffHz, clampedNearCutoff), 60.0)
+        let clampedDistance = max(min(distanceMeters, clampedFarDistance), clampedNearDistance)
+
+        let t = (clampedDistance - clampedNearDistance) / (clampedFarDistance - clampedNearDistance)
+        let ratio = clampedFarCutoff / clampedNearCutoff
+        let cutoff = clampedNearCutoff * pow(ratio, t)
+        lowPassBand.frequency = cutoff
     }
 
     func setBackgroundVolume(_ volume: Float) {

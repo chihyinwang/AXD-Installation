@@ -2,6 +2,7 @@ import Foundation
 import simd
 
 struct TowerAudioMixSettings {
+    let isGuideSourceEnabledInFocus: Bool
     let activeTowerVolume: Float
     let backgroundVolumeNormal: Float
     let backgroundVolumeInFocus: Float
@@ -15,6 +16,7 @@ struct TowerAudioMixSettings {
     let towerVolumeReleaseDuration: Float
 
     static let `default` = TowerAudioMixSettings(
+        isGuideSourceEnabledInFocus: true,
         activeTowerVolume: 4.0,
         backgroundVolumeNormal: 0.04,
         backgroundVolumeInFocus: 0.004,
@@ -30,6 +32,12 @@ struct TowerAudioMixSettings {
 }
 
 final class TowerAudioMixController {
+    private enum GuideToneTransitionPhase {
+        case idle
+        case fadingOut(elapsed: Float, duration: Float, target: TowerToneVariant)
+        case fadingIn(elapsed: Float, duration: Float)
+    }
+
     private let audio: SpatialAudioRig
     private var towerAudioIDs: [UUID] = []
     private var towerFadeMultipliers: [Float] = []
@@ -44,6 +52,8 @@ final class TowerAudioMixController {
     private var lastLeadRowIndex: Int? = nil
     private var pendingLeadActivationRowIndex: Int? = nil
     private var pendingLeadActivationRemaining: Float = 0.0
+    private var guideToneTransitionPhase: GuideToneTransitionPhase = .idle
+    private var guideToneGain: Float = 1.0
 
     private let settings: TowerAudioMixSettings
 
@@ -82,6 +92,34 @@ final class TowerAudioMixController {
     func setGuideSourcePosition(_ position: SIMD3<Float>) {
         guard let guideSourceID else { return }
         audio.setSourcePosition(sourceID: guideSourceID, position: position)
+    }
+
+    func setGuideToneVariant(_ variant: TowerToneVariant) {
+        guard let guideSourceID else { return }
+        guideToneTransitionPhase = .idle
+        guideToneGain = 1.0
+        audio.setSourceToneVariant(sourceID: guideSourceID, variant: variant)
+    }
+
+    func setGuideToneVariantSmooth(_ variant: TowerToneVariant, duration: Float = 0.12) {
+        let clampedDuration = max(duration, 0.02)
+        guideToneTransitionPhase = .fadingOut(elapsed: 0.0, duration: clampedDuration, target: variant)
+    }
+
+    func setGuideDistanceLowPass(distanceMeters: Float,
+                                 nearDistanceMeters: Float,
+                                 farDistanceMeters: Float,
+                                 nearCutoffHz: Float,
+                                 farCutoffHz: Float) {
+        guard let guideSourceID else { return }
+        audio.setSourceDistanceLowPass(
+            sourceID: guideSourceID,
+            distanceMeters: distanceMeters,
+            nearDistanceMeters: nearDistanceMeters,
+            farDistanceMeters: farDistanceMeters,
+            nearCutoffHz: nearCutoffHz,
+            farCutoffHz: farCutoffHz
+        )
     }
 
     func setNearestAudibleRowIndex(_ rowIndex: Int?) {
@@ -124,6 +162,7 @@ final class TowerAudioMixController {
     func updateMix(isFocusActive: Bool, deltaTime: Float) {
         advanceTowerFades(deltaTime: deltaTime)
         advancePendingLeadActivation(deltaTime: deltaTime)
+        advanceGuideToneTransition(deltaTime: deltaTime)
 
         let targetFocusAmount: Float = isFocusActive ? 1.0 : 0.0
         let transitionDuration = (targetFocusAmount > focusAmount) ? settings.focusFadeInDuration : settings.focusFadeOutDuration
@@ -138,6 +177,7 @@ final class TowerAudioMixController {
         let leadRowIndex = activeLeadRowIndex(isFocusActive: isFocusActive)
         handleLeadRowTransition(to: leadRowIndex)
         let activeLeadRowIndex = resolvedLeadRowIndex(from: leadRowIndex)
+        let isGuideOnlyMode = settings.isGuideSourceEnabledInFocus
 
         for (rowIndex, id) in towerAudioIDs.enumerated() {
             let isNearest = (rowIndex == activeLeadRowIndex)
@@ -145,21 +185,55 @@ final class TowerAudioMixController {
             let baseTargetVolume: Float = isNearest
                 ? settings.activeTowerVolume
                 : (settings.activeTowerVolume * fadeMultiplier)
-            let focusTowerScale = 1.0 - focusAmount
-            let targetVolume = baseTargetVolume * focusTowerScale
+            let targetVolume: Float = isGuideOnlyMode ? 0.0 : baseTargetVolume
             let currentVolume = towerCurrentVolumes[rowIndex]
-            let transitionDuration = (targetVolume > currentVolume)
-                ? settings.towerVolumeAttackDuration
-                : settings.towerVolumeReleaseDuration
-            let step = min(max(deltaTime / max(transitionDuration, 0.001), 0.0), 1.0)
-            let smoothedVolume = currentVolume + (targetVolume - currentVolume) * step
+            let smoothedVolume: Float
+            if isGuideOnlyMode {
+                smoothedVolume = 0.0
+            } else {
+                let transitionDuration = (targetVolume > currentVolume)
+                    ? settings.towerVolumeAttackDuration
+                    : settings.towerVolumeReleaseDuration
+                let step = min(max(deltaTime / max(transitionDuration, 0.001), 0.0), 1.0)
+                smoothedVolume = currentVolume + (targetVolume - currentVolume) * step
+            }
             towerCurrentVolumes[rowIndex] = smoothedVolume
             audio.setSourceVolume(sourceID: id, volume: smoothedVolume)
         }
 
         if let guideSourceID {
-            let guideVolume = settings.focusGuideCueVolume * guideBlendCurrent * focusAmount
+            let guideVolume: Float = isGuideOnlyMode
+                ? (settings.focusGuideCueVolume * guideBlendCurrent * guideToneGain)
+                : 0.0
             audio.setSourceVolume(sourceID: guideSourceID, volume: guideVolume)
+        }
+    }
+
+    private func advanceGuideToneTransition(deltaTime: Float) {
+        switch guideToneTransitionPhase {
+        case .idle:
+            guideToneGain = 1.0
+        case .fadingOut(let elapsed, let duration, let target):
+            let nextElapsed = elapsed + max(deltaTime, 0.0)
+            let progress = min(nextElapsed / max(duration, 0.001), 1.0)
+            guideToneGain = 1.0 - progress
+            if progress >= 1.0 {
+                if let guideSourceID {
+                    audio.setSourceToneVariant(sourceID: guideSourceID, variant: target)
+                }
+                guideToneTransitionPhase = .fadingIn(elapsed: 0.0, duration: duration)
+            } else {
+                guideToneTransitionPhase = .fadingOut(elapsed: nextElapsed, duration: duration, target: target)
+            }
+        case .fadingIn(let elapsed, let duration):
+            let nextElapsed = elapsed + max(deltaTime, 0.0)
+            let progress = min(nextElapsed / max(duration, 0.001), 1.0)
+            guideToneGain = progress
+            if progress >= 1.0 {
+                guideToneTransitionPhase = .idle
+            } else {
+                guideToneTransitionPhase = .fadingIn(elapsed: nextElapsed, duration: duration)
+            }
         }
     }
 
