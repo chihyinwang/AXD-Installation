@@ -3,21 +3,28 @@ import RealityKit
 import Combine
 import AppKit
 
+enum TutorialEntryMode {
+    case part1
+    case part2
+}
+
 struct TutorialGameView: NSViewRepresentable {
+    var entryMode: TutorialEntryMode = .part1
     var towerLayout: TowerLayoutConfig = .default
     var leftArmPoseStateCode: Int?
     var rightArmPoseStateCode: Int?
     var onTutorialMessageChanged: ((String) -> Void)? = nil
-    var onToggleScene: (() -> Void)? = nil
+    var onSceneRequest: ((AppScene) -> Void)? = nil
 
     func makeNSView(context: Context) -> TutorialARView {
         TutorialARView(
             frame: .zero,
+            entryMode: entryMode,
             towerLayout: towerLayout,
             leftArmPoseStateCode: leftArmPoseStateCode,
             rightArmPoseStateCode: rightArmPoseStateCode,
             onTutorialMessageChanged: onTutorialMessageChanged,
-            onToggleScene: onToggleScene
+            onSceneRequest: onSceneRequest
         )
     }
 
@@ -31,6 +38,7 @@ struct TutorialGameView: NSViewRepresentable {
 
 final class TutorialARView: ARView {
     private enum TutorialStep {
+        case part2Intro
         case waitingForFirstInput
         case rightOriginal
         case rightWrapped
@@ -44,6 +52,7 @@ final class TutorialARView: ARView {
     private let worldPhysicsConfig: GameARView.WorldPhysicsConfig = .default
     private let launchSequenceConfig: GameARView.LaunchSequenceConfig = .default
     private let cameraFollowConfig: GameARView.CameraFollowConfig = .default
+    private let entryMode: TutorialEntryMode
     private let towerLayoutConfig: TowerLayoutConfig
 
     private let world = AnchorEntity(world: .zero)
@@ -57,7 +66,7 @@ final class TutorialARView: ARView {
     private let audio = SpatialAudioRig()
     private let webRenderer: WebRenderer
 
-    private let onToggleScene: (() -> Void)?
+    private let onSceneRequest: ((AppScene) -> Void)?
     private let onTutorialMessageChanged: ((String) -> Void)?
 
     private var updateSub: Cancellable?
@@ -66,7 +75,7 @@ final class TutorialARView: ARView {
     private var leftArmPoseStateCode: Int?
     private var rightArmPoseStateCode: Int?
 
-    private var tutorialStep: TutorialStep = .waitingForFirstInput
+    private var tutorialStep: TutorialStep
 
     private var leftTower: ModelEntity?
     private var rightTower: ModelEntity?
@@ -83,18 +92,21 @@ final class TutorialARView: ARView {
 
     init(
         frame frameRect: CGRect,
+        entryMode: TutorialEntryMode = .part1,
         towerLayout: TowerLayoutConfig = .default,
         leftArmPoseStateCode: Int?,
         rightArmPoseStateCode: Int?,
         onTutorialMessageChanged: ((String) -> Void)? = nil,
-        onToggleScene: (() -> Void)? = nil
+        onSceneRequest: ((AppScene) -> Void)? = nil
     ) {
+        self.entryMode = entryMode
         self.towerLayoutConfig = towerLayout
         self.leftArmPoseStateCode = leftArmPoseStateCode
         self.rightArmPoseStateCode = rightArmPoseStateCode
         self.onTutorialMessageChanged = onTutorialMessageChanged
-        self.onToggleScene = onToggleScene
+        self.onSceneRequest = onSceneRequest
         self.webRenderer = WebRenderer(world: world)
+        self.tutorialStep = entryMode == .part1 ? .waitingForFirstInput : .part2Intro
 
         super.init(frame: frameRect)
         setupScene()
@@ -104,12 +116,14 @@ final class TutorialARView: ARView {
     }
 
     @MainActor required init(frame frameRect: CGRect) {
+        self.entryMode = .part1
         self.towerLayoutConfig = .default
         self.leftArmPoseStateCode = nil
         self.rightArmPoseStateCode = nil
         self.onTutorialMessageChanged = nil
-        self.onToggleScene = nil
+        self.onSceneRequest = nil
         self.webRenderer = WebRenderer(world: world)
+        self.tutorialStep = .waitingForFirstInput
 
         super.init(frame: frameRect)
         setupScene()
@@ -142,10 +156,9 @@ final class TutorialARView: ARView {
         if event.isARepeat { return }
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
 
-        if c == "s" {
-            onToggleScene?()
-            return
-        }
+        if c == "a" { onSceneRequest?(.game); return }
+        if c == "s" { onSceneRequest?(.tutorialPart1); return }
+        if c == "d" { onSceneRequest?(.tutorialPart2); return }
 
         if c == "q" {
             if tutorialStep == .waitingForFirstInput {
@@ -261,8 +274,10 @@ final class TutorialARView: ARView {
 
     private func currentStepMessage() -> String {
         switch tutorialStep {
+        case .part2Intro:
+            return "Welcome to the tutorial part 2. Please press the hand grip once to see the next step."
         case .waitingForFirstInput:
-            return "Welcome to the tutorial. Please press the hand grip once to see the next step."
+            return "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
         case .rightOriginal:
             return "This is the Sound Tower. It makes sound.\nPlease raise your right hand and keep pressing the right hand grip."
         case .rightWrapped:
@@ -364,6 +379,15 @@ final class TutorialARView: ARView {
 
     private func applyAudioMixForCurrentStep() {
         switch tutorialStep {
+        case .part2Intro:
+            if let leftTowerSourceID {
+                audio.setSourceToneVariant(sourceID: leftTowerSourceID, variant: .normal)
+                audio.setSourceVolume(sourceID: leftTowerSourceID, volume: 0)
+            }
+            if let rightTowerSourceID {
+                audio.setSourceToneVariant(sourceID: rightTowerSourceID, variant: .normal)
+                audio.setSourceVolume(sourceID: rightTowerSourceID, volume: 0)
+            }
         case .waitingForFirstInput:
             if let leftTowerSourceID {
                 audio.setSourceToneVariant(sourceID: leftTowerSourceID, variant: .normal)
@@ -436,6 +460,8 @@ final class TutorialARView: ARView {
 
         let activeSide: TowerSide?
         switch tutorialStep {
+        case .part2Intro:
+            activeSide = nil
         case .waitingForFirstInput:
             activeSide = nil
         case .rightOriginal:

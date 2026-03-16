@@ -16,7 +16,7 @@ struct GameView: NSViewRepresentable {
     var focusTiming: FocusTimingConfig = .default
     var towerLayout: TowerLayoutConfig = .default
     var swingPhysics: SwingPhysicsConfig = .default
-    var onToggleScene: (() -> Void)? = nil
+    var onSceneRequest: ((AppScene) -> Void)? = nil
 
     func makeNSView(context: Context) -> GameARView {
         GameARView(
@@ -24,7 +24,7 @@ struct GameView: NSViewRepresentable {
             focusTiming: focusTiming,
             towerLayout: towerLayout,
             swingPhysics: swingPhysics,
-            onToggleScene: onToggleScene
+            onSceneRequest: onSceneRequest
         )
     }
     func updateNSView(_ nsView: GameARView, context: Context) {}
@@ -90,7 +90,7 @@ final class GameARView: ARView {
     private let audioMixController: TowerAudioMixController
     private let gameStateMachine = GameStateMachine()
     private let webRenderer: WebRenderer
-    private let onToggleScene: (() -> Void)?
+    private let onSceneRequest: ((AppScene) -> Void)?
 
     // MARK: Runtime state
 
@@ -119,7 +119,7 @@ final class GameARView: ARView {
         focusTiming: FocusTimingConfig = .default,
         towerLayout: TowerLayoutConfig = .default,
         swingPhysics: SwingPhysicsConfig = .default,
-        onToggleScene: (() -> Void)? = nil
+        onSceneRequest: ((AppScene) -> Void)? = nil
     ) {
         self.swingPhysicsConfig = swingPhysics
         self.towerLayoutConfig = towerLayout
@@ -130,7 +130,7 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
-        self.onToggleScene = onToggleScene
+        self.onSceneRequest = onSceneRequest
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -148,7 +148,7 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
-        self.onToggleScene = nil
+        self.onSceneRequest = nil
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -174,7 +174,9 @@ final class GameARView: ARView {
         if event.isARepeat { return }
 
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
-        if c == "s" { onToggleScene?(); return }
+        if c == "a" { onSceneRequest?(.game); return }
+        if c == "s" { onSceneRequest?(.tutorialPart1); return }
+        if c == "d" { onSceneRequest?(.tutorialPart2); return }
 
         if c == "q" { attemptShoot(.left); return }
         if c == "w" { attemptRelease(.left); return }

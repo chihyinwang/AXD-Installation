@@ -7,35 +7,52 @@
 
 import SwiftUI
 
-struct ContentView: View {
-    private enum SceneSelection {
-        case game
-        case tutorial
-    }
+enum AppScene {
+    case game
+    case tutorialPart1
+    case tutorialPart2
+}
 
-    @State private var sceneSelection: SceneSelection = .game
-    @State private var tutorialMessage: String = "Welcome to the tutorial. Please press the hand grip once to see the next step."
+struct ContentView: View {
+    @State private var sceneSelection: AppScene = .game
+    @State private var sceneResetID: UUID = UUID()
+    @State private var tutorialMessage: String = "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
     @StateObject private var poseReceiver = UDPPoseReceiver(port: 7777)
 
     var body: some View {
         ZStack(alignment: .top) {
             if sceneSelection == .game {
-                GameView(onToggleScene: toggleSceneSelection)
+                GameView(onSceneRequest: requestScene)
+                    .id(sceneResetID)
                     .ignoresSafeArea()
-            } else {
+            } else if sceneSelection == .tutorialPart1 {
                 TutorialGameView(
+                    entryMode: .part1,
                     leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
                     rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
                     onTutorialMessageChanged: { message in
                         tutorialMessage = message
                     },
-                    onToggleScene: toggleSceneSelection
+                    onSceneRequest: requestScene
                 )
+                    .id(sceneResetID)
+                    .ignoresSafeArea()
+            } else {
+                TutorialGameView(
+                    entryMode: .part2,
+                    leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
+                    rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
+                    onTutorialMessageChanged: { message in
+                        tutorialMessage = message
+                    },
+                    onSceneRequest: requestScene
+                )
+                    .id(sceneResetID)
                     .ignoresSafeArea()
             }
 
             VStack(spacing: 10) {
-                if sceneSelection == .tutorial {
+                if sceneSelection != .game {
                     Text(tutorialMessage)
                         .font(.system(.body, design: .monospaced))
                         .padding(12)
@@ -72,8 +89,17 @@ struct ContentView: View {
         }
     }
 
-    private func toggleSceneSelection() {
-        sceneSelection = (sceneSelection == .game) ? .tutorial : .game
+    private func requestScene(_ target: AppScene) {
+        sceneSelection = target
+        switch target {
+        case .game:
+            break
+        case .tutorialPart1:
+            tutorialMessage = "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
+        case .tutorialPart2:
+            tutorialMessage = "Welcome to the tutorial part 2. Please press the hand grip once to see the next step."
+        }
+        sceneResetID = UUID()
     }
 
     @ViewBuilder
