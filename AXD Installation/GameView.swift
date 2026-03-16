@@ -55,6 +55,7 @@ final class GameARView: ARView {
     private let focusStateMachine: FocusStateMachine
     private let releaseConfig: ReleaseConfig = .default
     private let releaseCueAudioConfig: ReleaseCueAudioConfig = .default
+    private let inputControlConfig: InputControlConfig = .default
     private let shootInputGateConfig: ShootInputGateConfig = .default
     private let launchSequenceConfig: LaunchSequenceConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
@@ -198,13 +199,21 @@ final class GameARView: ARView {
             attemptShoot(.left)
             return
         }
-        if c == "w" { attemptRelease(.left); return }
+        if c == "w" {
+            guard inputControlConfig.mode == .manualRelease else { return }
+            attemptRelease(.left)
+            return
+        }
         if c == "e" {
             guard isShootInputAllowed(for: .right) else { return }
             attemptShoot(.right)
             return
         }
-        if c == "r" { attemptRelease(.right); return }
+        if c == "r" {
+            guard inputControlConfig.mode == .manualRelease else { return }
+            attemptRelease(.right)
+            return
+        }
         if c == "g" { restartGame(); return }
     }
 
@@ -344,6 +353,16 @@ final class GameARView: ARView {
                 breakLaunchPrepConnection(for: pendingSide)
             }
         }
+
+        if inputControlConfig.mode == .focusShootAutoRelease,
+           launchPrepCharging,
+           launchPrepChargeElapsed >= launchSequenceConfig.chargeMinDuration {
+            launchPrepReleaseLeftArmed = true
+            launchPrepReleaseRightArmed = true
+            pendingChordReleaseSide = nil
+            pendingChordReleaseElapsed = 0.0
+            launchFromPrepIfReady()
+        }
     }
 
     private func handleSwingingState(dt: Float) {
@@ -397,6 +416,12 @@ final class GameARView: ARView {
         // 5) Update web every frame (sticks to player + anchor)
         webRenderer.updateWeb(from: playerPos, to: s.anchor)
         updateReleaseCueAudioTransition(swingState: s, dt: dt)
+
+        if inputControlConfig.mode == .focusShootAutoRelease,
+           isSuccessfulReleaseWindow(swingState: s) {
+            releaseWeb(successful: true, swingState: s)
+            return
+        }
 
         if hasMissedReleaseWindow(swingState: s) {
             print("[web] release window missed -> fail drop")

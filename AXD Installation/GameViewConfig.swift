@@ -2,6 +2,19 @@ import Foundation
 import simd
 
 extension GameARView {
+    enum InputControlMode {
+        case manualRelease
+        case focusShootAutoRelease
+    }
+
+    struct InputControlConfig {
+        let mode: InputControlMode
+
+        static let `default` = InputControlConfig(
+            mode: .focusShootAutoRelease
+        )
+    }
+
     enum ShootInputGateMode {
         case keyboardOnly
         case singlePhoneEitherArmMode
@@ -13,7 +26,7 @@ extension GameARView {
         let requiredArmPoseStateCode: Int
 
         static let `default` = ShootInputGateConfig(
-            mode: .singlePhoneEitherArmMode,
+            mode: .keyboardOnly,
             requiredArmPoseStateCode: 2
         )
     }
@@ -158,7 +171,7 @@ extension GameARView {
         let showGuideDebugSpheres: Bool
 
         static let `default` = DebugConfig(
-            showGuideDebugSpheres: true
+            showGuideDebugSpheres: false
         )
     }
 }
