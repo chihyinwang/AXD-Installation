@@ -818,6 +818,7 @@ final class GameARView: ARView {
                            towerZ: towerPos.z,
                            rowIndex: nextIndex,
                            side: side)
+        webRenderer.startWebCast()
         if let sourceID = audioMixController.sourceID(forRowIndex: nextIndex) {
             audio.setSourceToneVariant(sourceID: sourceID, variant: .muffled)
         }
@@ -930,7 +931,7 @@ final class GameARView: ARView {
         }
 
         swing = nil
-        webRenderer.hideWeb()
+        webRenderer.dropCurrentWebSoftly(from: playerPos, to: swingState.anchor)
         gameStateMachine.transition(to: .falling)
         audioMixController.fadeOutTowerRow(passedRow, duration: 0.6, startLevel: 0.16)
 
@@ -948,7 +949,7 @@ final class GameARView: ARView {
 
     private func fireFailedWebShot(to side: TowerSide) {
         let sideSign: Float = (side == .left) ? -1.0 : 1.0
-        let start = playerPos + SIMD3<Float>(0, 0.2, 0)
+        let start = playerPos
         let end = start + SIMD3<Float>(
             sideSign * failedWebShotLateralDistance,
             failedWebShotVerticalOffset,

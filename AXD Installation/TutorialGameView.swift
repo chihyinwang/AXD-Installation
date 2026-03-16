@@ -330,7 +330,7 @@ final class TutorialARView: ARView {
         guard let targetTower, let sourceID else { return }
 
         let towerPosition = targetTower.position(relativeTo: nil)
-        let start = playerPos + SIMD3<Float>(0, 0.2, 0)
+        let start = playerPos
         let end = SIMD3<Float>(towerPosition.x, towerPosition.y + towerLayoutConfig.towerHeight * 0.5, towerPosition.z)
 
         webRenderer.updateWeb(from: start, to: end)
