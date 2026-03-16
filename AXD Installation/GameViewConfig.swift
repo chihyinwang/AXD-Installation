@@ -162,8 +162,8 @@ extension GameARView {
             zScaleAtMaxDistance: 0.8,
             lowPassNearDistanceMeters: 11.0,
             lowPassFarDistanceMeters: 18.0,
-            lowPassNearCutoffHz: 2200,
-            lowPassFarCutoffHz: 280
+            lowPassNearCutoffHz: 2800, // 2200
+            lowPassFarCutoffHz: 150 // 280
         )
     }
 
