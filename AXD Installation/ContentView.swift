@@ -8,12 +8,23 @@
 import SwiftUI
 
 struct ContentView: View {
+    private enum SceneSelection {
+        case game
+        case tutorial
+    }
+
+    @State private var sceneSelection: SceneSelection = .game
     @StateObject private var poseReceiver = UDPPoseReceiver(port: 7777)
 
     var body: some View {
         ZStack {
-            GameView()
-                .ignoresSafeArea()
+            if sceneSelection == .game {
+                GameView(onToggleScene: toggleSceneSelection)
+                    .ignoresSafeArea()
+            } else {
+                TutorialGameView(onToggleScene: toggleSceneSelection)
+                    .ignoresSafeArea()
+            }
 
             HStack(alignment: .top, spacing: 12) {
                 posePanel(
@@ -38,6 +49,10 @@ struct ContentView: View {
         .onDisappear {
             poseReceiver.stop()
         }
+    }
+
+    private func toggleSceneSelection() {
+        sceneSelection = (sceneSelection == .game) ? .tutorial : .game
     }
 
     @ViewBuilder

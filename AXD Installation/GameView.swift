@@ -16,13 +16,15 @@ struct GameView: NSViewRepresentable {
     var focusTiming: FocusTimingConfig = .default
     var towerLayout: TowerLayoutConfig = .default
     var swingPhysics: SwingPhysicsConfig = .default
+    var onToggleScene: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> GameARView {
         GameARView(
             frame: .zero,
             focusTiming: focusTiming,
             towerLayout: towerLayout,
-            swingPhysics: swingPhysics
+            swingPhysics: swingPhysics,
+            onToggleScene: onToggleScene
         )
     }
     func updateNSView(_ nsView: GameARView, context: Context) {}
@@ -88,6 +90,7 @@ final class GameARView: ARView {
     private let audioMixController: TowerAudioMixController
     private let gameStateMachine = GameStateMachine()
     private let webRenderer: WebRenderer
+    private let onToggleScene: (() -> Void)?
 
     // MARK: Runtime state
 
@@ -115,7 +118,8 @@ final class GameARView: ARView {
         frame frameRect: CGRect,
         focusTiming: FocusTimingConfig = .default,
         towerLayout: TowerLayoutConfig = .default,
-        swingPhysics: SwingPhysicsConfig = .default
+        swingPhysics: SwingPhysicsConfig = .default,
+        onToggleScene: (() -> Void)? = nil
     ) {
         self.swingPhysicsConfig = swingPhysics
         self.towerLayoutConfig = towerLayout
@@ -126,6 +130,7 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
+        self.onToggleScene = onToggleScene
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -143,6 +148,7 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
+        self.onToggleScene = nil
         super.init(frame: frameRect)
         setupScene()
         setupUpdateLoop()
@@ -168,6 +174,8 @@ final class GameARView: ARView {
         if event.isARepeat { return }
 
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if c == "s" { onToggleScene?(); return }
+
         if c == "q" { attemptShoot(.left); return }
         if c == "w" { attemptRelease(.left); return }
         if c == "e" { attemptShoot(.right); return }
