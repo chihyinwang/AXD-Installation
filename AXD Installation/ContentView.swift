@@ -14,34 +14,55 @@ struct ContentView: View {
     }
 
     @State private var sceneSelection: SceneSelection = .game
+    @State private var tutorialMessage: String = "Welcome to the tutorial. Please press the hand grip once to see the next step."
     @StateObject private var poseReceiver = UDPPoseReceiver(port: 7777)
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             if sceneSelection == .game {
                 GameView(onToggleScene: toggleSceneSelection)
                     .ignoresSafeArea()
             } else {
-                TutorialGameView(onToggleScene: toggleSceneSelection)
+                TutorialGameView(
+                    leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
+                    rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
+                    onTutorialMessageChanged: { message in
+                        tutorialMessage = message
+                    },
+                    onToggleScene: toggleSceneSelection
+                )
                     .ignoresSafeArea()
             }
 
-            HStack(alignment: .top, spacing: 12) {
-                posePanel(
-                    title: "Left Hand (armModeCode=0)",
-                    packet: poseReceiver.leftPacket,
-                    fallbackModeCode: 0
-                )
+            VStack(spacing: 10) {
+                if sceneSelection == .tutorial {
+                    Text(tutorialMessage)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(12)
+                        .background(.black.opacity(0.8))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
 
-                Spacer(minLength: 0)
+                HStack(alignment: .top, spacing: 12) {
+                    posePanel(
+                        title: "Left Hand (armModeCode=0)",
+                        packet: poseReceiver.leftPacket,
+                        fallbackModeCode: 0
+                    )
 
-                posePanel(
-                    title: "Right Hand (armModeCode=1)",
-                    packet: poseReceiver.rightPacket,
-                    fallbackModeCode: 1
-                )
+                    Spacer(minLength: 0)
+
+                    posePanel(
+                        title: "Right Hand (armModeCode=1)",
+                        packet: poseReceiver.rightPacket,
+                        fallbackModeCode: 1
+                    )
+                }
             }
             .padding()
+            .padding(.top, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .onAppear {
             poseReceiver.start()
