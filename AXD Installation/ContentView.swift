@@ -22,7 +22,11 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .top) {
             if sceneSelection == .game {
-                GameView(onSceneRequest: requestScene)
+                GameView(
+                    leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
+                    rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
+                    onSceneRequest: requestScene
+                )
                     .id(sceneResetID)
                     .ignoresSafeArea()
             } else if sceneSelection == .tutorialPart1 {

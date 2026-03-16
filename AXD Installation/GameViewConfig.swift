@@ -2,6 +2,22 @@ import Foundation
 import simd
 
 extension GameARView {
+    enum ShootInputGateMode {
+        case keyboardOnly
+        case singlePhoneEitherArmMode
+        case dualPhoneMappedArmModes
+    }
+
+    struct ShootInputGateConfig {
+        let mode: ShootInputGateMode
+        let requiredArmPoseStateCode: Int
+
+        static let `default` = ShootInputGateConfig(
+            mode: .singlePhoneEitherArmMode,
+            requiredArmPoseStateCode: 2
+        )
+    }
+
     struct WorldPhysicsConfig {
         let centerX: Float
         let groundY: Float

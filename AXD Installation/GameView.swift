@@ -16,6 +16,8 @@ struct GameView: NSViewRepresentable {
     var focusTiming: FocusTimingConfig = .default
     var towerLayout: TowerLayoutConfig = .default
     var swingPhysics: SwingPhysicsConfig = .default
+    var leftArmPoseStateCode: Int?
+    var rightArmPoseStateCode: Int?
     var onSceneRequest: ((AppScene) -> Void)? = nil
 
     func makeNSView(context: Context) -> GameARView {
@@ -24,10 +26,14 @@ struct GameView: NSViewRepresentable {
             focusTiming: focusTiming,
             towerLayout: towerLayout,
             swingPhysics: swingPhysics,
+            leftArmPoseStateCode: leftArmPoseStateCode,
+            rightArmPoseStateCode: rightArmPoseStateCode,
             onSceneRequest: onSceneRequest
         )
     }
-    func updateNSView(_ nsView: GameARView, context: Context) {}
+    func updateNSView(_ nsView: GameARView, context: Context) {
+        nsView.updateArmPoseStateCodes(left: leftArmPoseStateCode, right: rightArmPoseStateCode)
+    }
 }
 
 // MARK: - RealityKit View (macOS desktop, non-AR)
@@ -49,6 +55,7 @@ final class GameARView: ARView {
     private let focusStateMachine: FocusStateMachine
     private let releaseConfig: ReleaseConfig = .default
     private let releaseCueAudioConfig: ReleaseCueAudioConfig = .default
+    private let shootInputGateConfig: ShootInputGateConfig = .default
     private let launchSequenceConfig: LaunchSequenceConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
     private let audioGuidanceConfig: AudioGuidanceConfig = .default
@@ -111,6 +118,8 @@ final class GameARView: ARView {
     private var launchPrepReleaseRightArmed: Bool = false
     private var pendingChordReleaseSide: TowerSide? = nil
     private var pendingChordReleaseElapsed: Float = 0.0
+    private var leftArmPoseStateCode: Int?
+    private var rightArmPoseStateCode: Int?
 
     // MARK: Init
 
@@ -119,6 +128,8 @@ final class GameARView: ARView {
         focusTiming: FocusTimingConfig = .default,
         towerLayout: TowerLayoutConfig = .default,
         swingPhysics: SwingPhysicsConfig = .default,
+        leftArmPoseStateCode: Int? = nil,
+        rightArmPoseStateCode: Int? = nil,
         onSceneRequest: ((AppScene) -> Void)? = nil
     ) {
         self.swingPhysicsConfig = swingPhysics
@@ -130,6 +141,8 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
+        self.leftArmPoseStateCode = leftArmPoseStateCode
+        self.rightArmPoseStateCode = rightArmPoseStateCode
         self.onSceneRequest = onSceneRequest
         super.init(frame: frameRect)
         setupScene()
@@ -148,6 +161,8 @@ final class GameARView: ARView {
         self.audio = SpatialAudioRig()
         self.audioMixController = TowerAudioMixController(audio: audio)
         self.webRenderer = WebRenderer(world: sceneEntities.world)
+        self.leftArmPoseStateCode = nil
+        self.rightArmPoseStateCode = nil
         self.onSceneRequest = nil
         super.init(frame: frameRect)
         setupScene()
@@ -178,11 +193,40 @@ final class GameARView: ARView {
         if c == "s" { onSceneRequest?(.tutorialPart1); return }
         if c == "d" { onSceneRequest?(.tutorialPart2); return }
 
-        if c == "q" { attemptShoot(.left); return }
+        if c == "q" {
+            guard isShootInputAllowed(for: .left) else { return }
+            attemptShoot(.left)
+            return
+        }
         if c == "w" { attemptRelease(.left); return }
-        if c == "e" { attemptShoot(.right); return }
+        if c == "e" {
+            guard isShootInputAllowed(for: .right) else { return }
+            attemptShoot(.right)
+            return
+        }
         if c == "r" { attemptRelease(.right); return }
         if c == "g" { restartGame(); return }
+    }
+
+    func updateArmPoseStateCodes(left: Int?, right: Int?) {
+        leftArmPoseStateCode = left
+        rightArmPoseStateCode = right
+    }
+
+    private func isShootInputAllowed(for side: TowerSide) -> Bool {
+        switch shootInputGateConfig.mode {
+        case .keyboardOnly:
+            return true
+        case .singlePhoneEitherArmMode:
+            return leftArmPoseStateCode == shootInputGateConfig.requiredArmPoseStateCode
+                || rightArmPoseStateCode == shootInputGateConfig.requiredArmPoseStateCode
+        case .dualPhoneMappedArmModes:
+            let requiredCode = shootInputGateConfig.requiredArmPoseStateCode
+            if side == .left {
+                return leftArmPoseStateCode == requiredCode
+            }
+            return rightArmPoseStateCode == requiredCode
+        }
     }
 
     // MARK: Scene setup
