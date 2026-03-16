@@ -11,8 +11,6 @@ enum TutorialEntryMode {
 struct TutorialGameView: NSViewRepresentable {
     var entryMode: TutorialEntryMode = .part1
     var towerLayout: TowerLayoutConfig = .default
-    var leftArmPoseStateCode: Int?
-    var rightArmPoseStateCode: Int?
     var onTutorialMessageChanged: ((String) -> Void)? = nil
     var onSceneRequest: ((AppScene) -> Void)? = nil
 
@@ -21,19 +19,11 @@ struct TutorialGameView: NSViewRepresentable {
             frame: .zero,
             entryMode: entryMode,
             towerLayout: towerLayout,
-            leftArmPoseStateCode: leftArmPoseStateCode,
-            rightArmPoseStateCode: rightArmPoseStateCode,
             onTutorialMessageChanged: onTutorialMessageChanged,
             onSceneRequest: onSceneRequest
         )
     }
-
-    func updateNSView(_ nsView: TutorialARView, context: Context) {
-        nsView.updateArmPoseStateCodes(
-            left: leftArmPoseStateCode,
-            right: rightArmPoseStateCode
-        )
-    }
+    func updateNSView(_ nsView: TutorialARView, context: Context) {}
 }
 
 final class TutorialARView: ARView {
@@ -72,9 +62,6 @@ final class TutorialARView: ARView {
     private var updateSub: Cancellable?
     private var playerPos: SIMD3<Float> = .zero
 
-    private var leftArmPoseStateCode: Int?
-    private var rightArmPoseStateCode: Int?
-
     private var tutorialStep: TutorialStep
 
     private var leftTower: ModelEntity?
@@ -86,27 +73,19 @@ final class TutorialARView: ARView {
     private let groundThickness: Float = 0.05
     private let tutorialTowerForwardDistance: Float = 12.0
     private let soloListenVolume: Float = 1.0
-    private let requiredArmPoseStateCode: Int = 2
-    private let stepDelaySeconds: Float = 2.5
-    private var stepElapsed: Float = 0
-
     init(
         frame frameRect: CGRect,
         entryMode: TutorialEntryMode = .part1,
         towerLayout: TowerLayoutConfig = .default,
-        leftArmPoseStateCode: Int?,
-        rightArmPoseStateCode: Int?,
         onTutorialMessageChanged: ((String) -> Void)? = nil,
         onSceneRequest: ((AppScene) -> Void)? = nil
     ) {
         self.entryMode = entryMode
         self.towerLayoutConfig = towerLayout
-        self.leftArmPoseStateCode = leftArmPoseStateCode
-        self.rightArmPoseStateCode = rightArmPoseStateCode
         self.onTutorialMessageChanged = onTutorialMessageChanged
         self.onSceneRequest = onSceneRequest
         self.webRenderer = WebRenderer(world: world)
-        self.tutorialStep = entryMode == .part1 ? .waitingForFirstInput : .part2Intro
+        self.tutorialStep = entryMode == .part1 ? .rightOriginal : .part2Intro
 
         super.init(frame: frameRect)
         setupScene()
@@ -118,12 +97,10 @@ final class TutorialARView: ARView {
     @MainActor required init(frame frameRect: CGRect) {
         self.entryMode = .part1
         self.towerLayoutConfig = .default
-        self.leftArmPoseStateCode = nil
-        self.rightArmPoseStateCode = nil
         self.onTutorialMessageChanged = nil
         self.onSceneRequest = nil
         self.webRenderer = WebRenderer(world: world)
-        self.tutorialStep = .waitingForFirstInput
+        self.tutorialStep = .rightOriginal
 
         super.init(frame: frameRect)
         setupScene()
@@ -147,11 +124,6 @@ final class TutorialARView: ARView {
         window?.makeFirstResponder(self)
     }
 
-    func updateArmPoseStateCodes(left: Int?, right: Int?) {
-        leftArmPoseStateCode = left
-        rightArmPoseStateCode = right
-    }
-
     override func keyDown(with event: NSEvent) {
         if event.isARepeat { return }
         let c = (event.charactersIgnoringModifiers ?? "").lowercased()
@@ -161,30 +133,30 @@ final class TutorialARView: ARView {
         if c == "d" { onSceneRequest?(.tutorialPart2); return }
 
         if c == "q" {
-            if tutorialStep == .waitingForFirstInput {
-                transitionToStep(.rightOriginal)
+            if tutorialStep == .leftOriginal {
+                attemptShoot(side: .left)
                 return
             }
-            attemptShoot(side: .left)
+            if tutorialStep == .leftWrapped {
+                releaseWrappedWebSoftly(side: .left)
+                transitionToStep(.part1Completed)
+                return
+            }
+            pushTutorialMessage("Please follow the current tutorial step.")
             return
         }
 
         if c == "e" {
-            if tutorialStep == .waitingForFirstInput {
-                transitionToStep(.rightOriginal)
+            if tutorialStep == .rightOriginal {
+                attemptShoot(side: .right)
                 return
             }
-            attemptShoot(side: .right)
-            return
-        }
-
-        if c == "r" {
-            attemptRelease(side: .right)
-            return
-        }
-
-        if c == "w" {
-            attemptRelease(side: .left)
+            if tutorialStep == .rightWrapped {
+                releaseWrappedWebSoftly(side: .right)
+                transitionToStep(.leftOriginal)
+                return
+            }
+            pushTutorialMessage("Please follow the current tutorial step.")
             return
         }
     }
@@ -249,25 +221,15 @@ final class TutorialARView: ARView {
     }
 
     private func tickTutorial(deltaTime: Float) {
-        stepElapsed += deltaTime
         updateCameraFollow()
         updateTowerBlinkHighlight(deltaTime: deltaTime)
 
         webRenderer.tick(deltaTime: deltaTime)
         audio.setListenerPosition(playerPos)
-
-        if tutorialStep == .waitingForLeftOriginal, stepElapsed >= stepDelaySeconds {
-            transitionToStep(.leftOriginal)
-        }
-
-        if tutorialStep == .waitingForPart1Complete, stepElapsed >= stepDelaySeconds {
-            transitionToStep(.part1Completed)
-        }
     }
 
     private func transitionToStep(_ step: TutorialStep) {
         tutorialStep = step
-        stepElapsed = 0
         applyAudioMixForCurrentStep()
         pushTutorialMessage(currentStepMessage())
     }
@@ -275,23 +237,23 @@ final class TutorialARView: ARView {
     private func currentStepMessage() -> String {
         switch tutorialStep {
         case .part2Intro:
-            return "Welcome to the tutorial part 2. Please press the hand grip once to see the next step."
+            return "Welcome to tutorial part 2."
         case .waitingForFirstInput:
-            return "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
+            return "Welcome to tutorial."
         case .rightOriginal:
-            return "This is the Sound Tower. It makes sound.\nPlease raise your right hand and keep pressing the right hand grip."
+            return "Right tower sound is active. Press right hand grip (E) to shoot web."
         case .rightWrapped:
-            return "The sound changed! You are hearing a Sound Tower wrapped in web.\nNow you can release the hand grip to loosen the web."
+            return "The sound changed (web still attached). Press right hand grip (E) again to continue."
         case .waitingForLeftOriginal:
-            return "Great. Get ready for the next Sound Tower."
+            return "Get ready for the next step."
         case .leftOriginal:
-            return "This is another Sound Tower on the left.\nPlease raise your left hand and press the hand grip."
+            return "Left tower sound is active. Press left hand grip (Q) to shoot web."
         case .leftWrapped:
-            return "This tower's sound changed too!\nNow you can release the hand grip to loosen the web."
+            return "The sound changed (web still attached). Press left hand grip (Q) again to finish."
         case .waitingForPart1Complete:
-            return "Nice. Preparing the completion message..."
+            return "Almost done."
         case .part1Completed:
-            return "Part 1 tutorial completed."
+            return "Tutorial completed."
         }
     }
 
@@ -318,13 +280,6 @@ final class TutorialARView: ARView {
             return
         }
 
-        let armPoseStateCode = (side == .left) ? leftArmPoseStateCode : rightArmPoseStateCode
-        guard armPoseStateCode == requiredArmPoseStateCode else {
-            let sideLabel = (side == .left) ? "Left hand" : "Right hand"
-            pushTutorialMessage("\(sideLabel): armPoseStateCode must be 2 to shoot.")
-            return
-        }
-
         let targetTower = (side == .left) ? leftTower : rightTower
         let sourceID = (side == .left) ? leftTowerSourceID : rightTowerSourceID
         guard let targetTower, let sourceID else { return }
@@ -347,34 +302,20 @@ final class TutorialARView: ARView {
         }
     }
 
-    private func attemptRelease(side: TowerSide) {
-        if tutorialStep == .rightWrapped {
-            guard side == .right else {
-                pushTutorialMessage("Use R in this step.")
-                return
-            }
+    private func releaseWrappedWebSoftly(side: TowerSide) {
+        let targetTower = (side == .left) ? leftTower : rightTower
+        let sourceID = (side == .left) ? leftTowerSourceID : rightTowerSourceID
+        guard let targetTower else {
             webRenderer.hideWeb()
-            if let rightTowerSourceID {
-                audio.setSourceToneVariant(sourceID: rightTowerSourceID, variant: .normal)
-            }
-            transitionToStep(.waitingForLeftOriginal)
             return
         }
 
-        if tutorialStep == .leftWrapped {
-            guard side == .left else {
-                pushTutorialMessage("Use W in this step.")
-                return
-            }
-            webRenderer.hideWeb()
-            if let leftTowerSourceID {
-                audio.setSourceToneVariant(sourceID: leftTowerSourceID, variant: .normal)
-            }
-            transitionToStep(.waitingForPart1Complete)
-            return
+        let towerPosition = targetTower.position(relativeTo: nil)
+        let end = SIMD3<Float>(towerPosition.x, towerPosition.y + towerLayoutConfig.towerHeight * 0.5, towerPosition.z)
+        webRenderer.dropCurrentWebSoftly(from: playerPos, to: end, lifetime: 0.9)
+        if let sourceID {
+            audio.setSourceToneVariant(sourceID: sourceID, variant: .normal)
         }
-
-        pushTutorialMessage("Please shoot first.")
     }
 
     private func applyAudioMixForCurrentStep() {

@@ -16,7 +16,7 @@ enum AppScene {
 struct ContentView: View {
     @State private var sceneSelection: AppScene = .game
     @State private var sceneResetID: UUID = UUID()
-    @State private var tutorialMessage: String = "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
+    @State private var tutorialMessage: String = ""
     @StateObject private var poseReceiver = UDPPoseReceiver(port: 7777)
 
     var body: some View {
@@ -32,8 +32,6 @@ struct ContentView: View {
             } else if sceneSelection == .tutorialPart1 {
                 TutorialGameView(
                     entryMode: .part1,
-                    leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
-                    rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
                     onTutorialMessageChanged: { message in
                         tutorialMessage = message
                     },
@@ -44,8 +42,6 @@ struct ContentView: View {
             } else {
                 TutorialGameView(
                     entryMode: .part2,
-                    leftArmPoseStateCode: poseReceiver.leftPacket?.armPoseStateCode,
-                    rightArmPoseStateCode: poseReceiver.rightPacket?.armPoseStateCode,
                     onTutorialMessageChanged: { message in
                         tutorialMessage = message
                     },
@@ -65,20 +61,22 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
 
-                HStack(alignment: .top, spacing: 12) {
-                    posePanel(
-                        title: "Left Hand (armModeCode=0)",
-                        packet: poseReceiver.leftPacket,
-                        fallbackModeCode: 0
-                    )
+                if sceneSelection == .game {
+                    HStack(alignment: .top, spacing: 12) {
+                        posePanel(
+                            title: "Left Hand (armModeCode=0)",
+                            packet: poseReceiver.leftPacket,
+                            fallbackModeCode: 0
+                        )
 
-                    Spacer(minLength: 0)
+                        Spacer(minLength: 0)
 
-                    posePanel(
-                        title: "Right Hand (armModeCode=1)",
-                        packet: poseReceiver.rightPacket,
-                        fallbackModeCode: 1
-                    )
+                        posePanel(
+                            title: "Right Hand (armModeCode=1)",
+                            packet: poseReceiver.rightPacket,
+                            fallbackModeCode: 1
+                        )
+                    }
                 }
             }
             .padding()
@@ -99,9 +97,9 @@ struct ContentView: View {
         case .game:
             break
         case .tutorialPart1:
-            tutorialMessage = "Welcome to the tutorial part 1. Please press the hand grip once to see the next step."
+            tutorialMessage = "Right tower sound is active. Press right hand grip (E) to shoot web."
         case .tutorialPart2:
-            tutorialMessage = "Welcome to the tutorial part 2. Please press the hand grip once to see the next step."
+            tutorialMessage = "Welcome to tutorial part 2."
         }
         sceneResetID = UUID()
     }
