@@ -248,6 +248,7 @@ final class GameARView: ARView {
         let ground = makeGroundEntity()
         world.addChild(ground)
         addStreetReferenceProps()
+        addFinishGate()
 
         playerPos = startPlayerPosition()
         player.position = playerPos
@@ -1207,6 +1208,13 @@ final class GameARView: ARView {
 
     private func addStreetReferenceProps() {
         SceneGeometryHelper.addStreetReferenceProps(
+            to: world,
+            towerLayoutConfig: towerLayoutConfig
+        )
+    }
+
+    private func addFinishGate() {
+        SceneGeometryHelper.addFinishGate(
             to: world,
             towerLayoutConfig: towerLayoutConfig
         )

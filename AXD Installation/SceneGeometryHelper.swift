@@ -84,4 +84,57 @@ struct SceneGeometryHelper {
             }
         }
     }
+
+    static func addFinishGate(
+        to world: Entity,
+        towerLayoutConfig: TowerLayoutConfig
+    ) {
+        let roadWidth: Float = max(10, abs(towerLayoutConfig.leftX) + abs(towerLayoutConfig.rightX) + 6)
+        let farthestTowerDistance = towerLayoutConfig.firstRowDistance
+            + Float(max(towerLayoutConfig.rowCount - 1, 0)) * towerLayoutConfig.rowSpacing
+
+        // Keep the gate visible near the final segment.
+        let finishZ = -(farthestTowerDistance + 15.0)
+        let poleHeight: Float = 4.2
+        let poleRadius: Float = 0.11
+        let poleOffsetX: Float = (roadWidth * 0.5) - 0.7
+
+        let poleMaterial = SimpleMaterial(color: NSColor(calibratedWhite: 0.82, alpha: 1.0), isMetallic: false)
+        let poleMesh = MeshResource.generateCylinder(height: poleHeight, radius: poleRadius)
+
+        let leftPole = ModelEntity(mesh: poleMesh, materials: [poleMaterial])
+        leftPole.position = [-poleOffsetX, poleHeight * 0.5, finishZ]
+        world.addChild(leftPole)
+
+        let rightPole = ModelEntity(mesh: poleMesh, materials: [poleMaterial])
+        rightPole.position = [poleOffsetX, poleHeight * 0.5, finishZ]
+        world.addChild(rightPole)
+
+        let bannerWidth = poleOffsetX * 2.0 - 0.55
+        let bannerHeight: Float = 1.0
+        let bannerThickness: Float = 0.06
+        let bannerY = poleHeight - 0.5
+
+        let banner = ModelEntity(
+            mesh: .generateBox(size: [bannerWidth, bannerHeight, bannerThickness]),
+            materials: [UnlitMaterial(color: .white)]
+        )
+        banner.position = [0, bannerY, finishZ]
+        world.addChild(banner)
+
+        let finishTextMesh = MeshResource.generateText(
+            "FINISH",
+            extrusionDepth: 0.02,
+            font: .boldSystemFont(ofSize: 0.55),
+            containerFrame: .zero,
+            alignment: .center,
+            lineBreakMode: .byWordWrapping
+        )
+        let finishText = ModelEntity(
+            mesh: finishTextMesh,
+            materials: [UnlitMaterial(color: .black)]
+        )
+        finishText.position = [-1.35, bannerY - 0.15, finishZ + 0.045]
+        world.addChild(finishText)
+    }
 }
