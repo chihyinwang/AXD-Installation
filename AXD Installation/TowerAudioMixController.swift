@@ -94,6 +94,11 @@ final class TowerAudioMixController {
         audio.setSourcePosition(sourceID: guideSourceID, position: position)
     }
 
+    func setGuidePlaybackRate(_ rate: Float) {
+        guard let guideSourceID else { return }
+        audio.setSourcePlaybackRate(sourceID: guideSourceID, rate: rate)
+    }
+
     func setGuideToneVariant(_ variant: TowerToneVariant) {
         guard let guideSourceID else { return }
         guideToneTransitionPhase = .idle
@@ -151,6 +156,7 @@ final class TowerAudioMixController {
         }
         if let guideSourceID {
             audio.setSourceVolume(sourceID: guideSourceID, volume: 0.0)
+            audio.setSourcePlaybackRate(sourceID: guideSourceID, rate: 1.0)
         }
     }
 

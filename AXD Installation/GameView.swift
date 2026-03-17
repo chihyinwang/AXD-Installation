@@ -60,6 +60,7 @@ final class GameARView: ARView {
     private let launchSequenceConfig: LaunchSequenceConfig = .default
     private let cameraFollowConfig: CameraFollowConfig = .default
     private let audioGuidanceConfig: AudioGuidanceConfig = .default
+    private let dopplerConfig: DopplerConfig = .default
     private let debugConfig: DebugConfig = .default
 
     private let rearTowerAudibleDistance: Float = 6.0
@@ -526,12 +527,25 @@ final class GameARView: ARView {
         guard let guidance,
               let targetNode = towerTrack.node(at: guidance.targetRowIndex) else {
             audioMixController.setGuideBlend(0.0)
+            audioMixController.setGuidePlaybackRate(1.0)
             setGuideDebugSpheresVisible(false)
             return
         }
 
         let towerPosition = targetNode.tower.position(relativeTo: nil)
         let guidePosition = guidedAudioPosition(for: towerPosition)
+        if dopplerConfig.isEnabled {
+            let sourceToListener = towerPosition - playerPos
+            let distance = max(simd_length(sourceToListener), 0.001)
+            let direction = sourceToListener / distance
+            let radialVelocity = simd_dot(playerVel, direction)
+            let speedOfSound = max(dopplerConfig.speedOfSoundMetersPerSecond, 0.001)
+            let rawRate = speedOfSound / max(speedOfSound - radialVelocity, speedOfSound * 0.2)
+            let clampedRate = max(min(rawRate, dopplerConfig.maxRate), dopplerConfig.minRate)
+            audioMixController.setGuidePlaybackRate(clampedRate)
+        } else {
+            audioMixController.setGuidePlaybackRate(1.0)
+        }
         if audioGuidanceConfig.isGuideDistanceLowPassEnabled {
             let trueDistance = simd_distance(playerPos, towerPosition)
             audioMixController.setGuideDistanceLowPass(

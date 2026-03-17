@@ -162,8 +162,22 @@ extension GameARView {
             zScaleAtMaxDistance: 0.8,
             lowPassNearDistanceMeters: 11.0,
             lowPassFarDistanceMeters: 18.0,
-            lowPassNearCutoffHz: 2800, // 2200
-            lowPassFarCutoffHz: 150 // 280
+            lowPassNearCutoffHz: 2800,
+            lowPassFarCutoffHz: 150
+        )
+    }
+
+    struct DopplerConfig {
+        let isEnabled: Bool
+        let speedOfSoundMetersPerSecond: Float
+        let minRate: Float
+        let maxRate: Float
+
+        static let `default` = DopplerConfig(
+            isEnabled: true,
+            speedOfSoundMetersPerSecond: 343.0,
+            minRate: 0.93,
+            maxRate: 1.07
         )
     }
 

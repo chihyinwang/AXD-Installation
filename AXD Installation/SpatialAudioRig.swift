@@ -21,6 +21,7 @@ final class SpatialAudioRig {
     private var normalLoopBuffer: AVAudioPCMBuffer?
     private var muffledLoopBuffer: AVAudioPCMBuffer?
     private var sources: [UUID: AVAudioPlayerNode] = [:]
+    private var sourceVarispeeds: [UUID: AVAudioUnitVarispeed] = [:]
     private var sourceFilters: [UUID: AVAudioUnitEQ] = [:]
     private var sourceToneVariants: [UUID: TowerToneVariant] = [:]
     private var backgroundBuffer: AVAudioPCMBuffer?
@@ -64,6 +65,7 @@ final class SpatialAudioRig {
 
         let id = UUID()
         let node = AVAudioPlayerNode()
+        let varispeed = AVAudioUnitVarispeed()
         let filter = AVAudioUnitEQ(numberOfBands: 1)
         let lowPassBand = filter.bands[0]
         lowPassBand.filterType = .lowPass
@@ -73,8 +75,10 @@ final class SpatialAudioRig {
         lowPassBand.gain = 0.0
 
         engine.attach(node)
+        engine.attach(varispeed)
         engine.attach(filter)
-        engine.connect(node, to: filter, format: buf.format)
+        engine.connect(node, to: varispeed, format: buf.format)
+        engine.connect(varispeed, to: filter, format: buf.format)
         engine.connect(filter, to: environment, format: buf.format)
 
         // Important: AVAudioEnvironmentNode spatializes mono input, so force a mono buffer.
@@ -90,6 +94,7 @@ final class SpatialAudioRig {
         node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
 
         sources[id] = node
+        sourceVarispeeds[id] = varispeed
         sourceFilters[id] = filter
         sourceToneVariants[id] = toneVariant
         return id
@@ -204,6 +209,11 @@ final class SpatialAudioRig {
         lowPassBand.frequency = cutoff
     }
 
+    func setSourcePlaybackRate(sourceID: UUID, rate: Float) {
+        guard let varispeed = sourceVarispeeds[sourceID] else { return }
+        varispeed.rate = max(0.25, min(rate, 4.0))
+    }
+
     func setBackgroundVolume(_ volume: Float) {
         backgroundNode?.volume = max(0.0, volume)
     }
@@ -213,6 +223,7 @@ final class SpatialAudioRig {
 
         for (id, node) in sources {
             sourceToneVariants[id] = .normal
+            sourceVarispeeds[id]?.rate = 1.0
             node.stop()
             node.scheduleBuffer(normalBuffer, at: nil, options: [.loops], completionHandler: nil)
             if started {
