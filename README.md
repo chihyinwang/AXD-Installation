@@ -1,9 +1,8 @@
-# SonicWEB
-
 ![SonicWEB banner](./Images/sonicweb-banner.png)
 
-**Spatial Audio Web-shooting Installation**
+# SonicWEB
 
+**Spatial Audio Web-shooting Installation**  
 An interactive installation where players locate hidden sound towers through spatial audio and trigger web-shooting actions through body movement and sensor input.
 
 ---
@@ -22,7 +21,7 @@ The prototype combines:
 - **Max/MSP** for signal processing
 - **Swift / RealityKit** for the playable game environment
 
-![SonicWEB prototype setup](./Images/prototype-setup.png)
+![SonicWEB prototype setup](./Images/sonicweb-setup.png)
 
 ---
 
@@ -41,7 +40,7 @@ Instead of relying mainly on visual markers, the player uses spatial audio cues 
 
 Motion data and MEMS microphone input are processed into a shooting trigger. The Swift / RealityKit game then responds with web visuals and spatial audio feedback, telling the player whether the shot succeeds or needs to be retried.
 
-![SonicWEB interaction flow](./Images/interaction-flow.png)
+![SonicWEB interaction flow](./Images/sonicweb-flow.png)
 
 The core loop is:
 
